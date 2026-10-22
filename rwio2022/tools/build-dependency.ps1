@@ -77,7 +77,7 @@ try {
     Write-Host "Building $ProjectName through its generated solution ..."
     & $MSBuildPath $Solution '/m' "/t:$ProjectName" `
         "/p:Configuration=$configuration" "/p:Platform=$platform" `
-        '/p:PlatformToolset=v145' '/verbosity:minimal' '/nologo'
+        '/p:PlatformToolset=v141' '/verbosity:minimal' '/nologo'
     if ($LASTEXITCODE -ne 0) {
         throw "$ProjectName`: MSBuild exited with code $LASTEXITCODE"
     }

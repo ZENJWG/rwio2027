@@ -1,10 +1,15 @@
-RWIO for 3ds Max 2027
+UNTESTED 3DS MAX 2022 COMPATIBILITY PORT
+=======================================
+This 2022 port is UNTESTED because the author does NOT have 3ds Max 2022
+installed. Static checks do not prove plugin loadability, import/export
+correctness, or script UI operation in the 2022 host.
+
+RWIO for 3ds Max 2022
 =====================
 
-This is an updated build of Aap's RWIO plugin for Autodesk 3ds Max 2027 - forked by Zeneric (aka Tz2times). It
+This is a source port of Aap's RWIO plugin for Autodesk 3ds Max 2022 - forked by Zeneric (aka Tz2times). It
 imports and exports RenderWare DFF/COL/animation data used by GTA-era assets,
-with local updates for current Max/Visual Studio tooling, Autodesk OpenPBR
-material support, RWIO quad display metadata, QuadrifyAll++ post-import cleanup,
+with local updates for current Max/Visual Studio tooling, 3ds Max 2022 Standard material fallback, RWIO quad display metadata, QuadrifyAll++ post-import cleanup,
 and several performance fixes.
 
 
@@ -13,11 +18,11 @@ Install
 
 Copy the built plugin:
 
-    lib/amd64/Release/rwio2027.dli
+    lib/amd64/Release/rwio2022.dli
 
-to your 3ds Max 2027 plugins folder, for example:
+to your 3ds Max 2022 plugins folder, for example:
 
-    C:/Program Files/Autodesk/3ds Max 2027/Plugins
+    C:/Program Files/Autodesk/3ds Max 2022/Plugins
 
 If you use a custom plugin folder, add that folder to the 3ds Max plugin paths.
 
@@ -26,12 +31,12 @@ Copy the startup scripts:
     scripts/startup/RW_Material.ms
     scripts/startup/gtahelper.ms
     scripts/startup/rwio_quadrifyall_plus.ms
-    scripts/startup/rw_openpbr_converter.ms
+    scripts/startup/rwio_dff_batch.ms
     scripts/startup/bipedmatch.ms
 
-to your 3ds Max 2027 user startup scripts folder, for example:
+to your 3ds Max 2022 user startup scripts folder, for example:
 
-    C:/Users/<user>/AppData/Local/Autodesk/3dsMax/2027 - 64bit/ENU/scripts/startup
+    C:/Users/<user>/AppData/Local/Autodesk/3dsMax/2022 - 64bit/ENU/scripts/startup
 
 You can also place them in another Max startup script path if your install uses
 shared scripts.
@@ -46,9 +51,12 @@ import/export metadata.
 RWIO-specific improvements by Zeneric. It is used by the importer dialog's
 optional `QuadrifyAll++` post-import weld/quadrify pass.
 
-`rw_openpbr_converter.ms` adds the `RW <-> OpenPBR Converter` utility for
-converting scene material assignments between RWIO's RW material and Autodesk
-OpenPBR materials.
+`rwio_dff_batch.ms` provides optional folder-based batch import/export dialogs.
+Batch export changes the selection while exporting and restores it afterward.
+Use a copy of your scene when testing this unverified helper.
+
+`scripts/optional-newer-max/rw_openpbr_converter.ms` is NOT loaded in 2022;
+native OpenPBR_Material was introduced much later and is absent in Max 2022.
 
 `bipedmatch.ms` is an optional Vice City-style biped matching helper.
 
@@ -56,13 +64,49 @@ OpenPBR materials.
 Build
 -----
 
-Required dependencies:
+**IMPORTANT: 2022 IS UNTESTED.** The author does not have 3ds Max 2022
+installed, so there has been NO 2022 host/runtime/scene-roundtrip validation.
+The C++ port has not been compiled here against the 2022 Autodesk SDK either.
 
-- 3ds Max 2027 SDK
-- Visual Studio C++ toolset compatible with `v145`
-- librw, built for win-amd64-null Release with the same toolset
-- librwgta, built for win-amd64-null Release with the same toolset
-- premake5, included in this folder
+Build from Windows PowerShell:
+
+    .\build.bat
+
+Required for the 2022 target:
+- Autodesk 3ds Max 2022 SDK (R24, MAX_RELEASE 24000). A 2027 SDK will not work.
+- MSVC **v141** (Visual Studio 2017 platform toolset); use an installation
+  exposing v141 via Visual Studio 2017/2019/2022 or VS 2026 *if supported*.
+  Visual Studio 2026's default v145 is NOT a substitute.
+- Windows 10 SDK 10.0.17134.0, as specified by Autodesk.
+- Git and PowerShell to download/build librw and librwgta.
+- Bundled premake5.exe.
+
+The builder searches for the actual v141 toolset in installed Visual Studio
+instances. It may attempt to install v141 through Visual Studio Installer,
+but VS 2026 may not offer it; install an older compatible VS side-by-side if
+necessary. Use `set RWIO_NO_INSTALL=1` to disable this installation attempt.
+
+The builder can download the SDK if you provide an authorized HTTPS ZIP URL:
+
+    set MAXSDK2022_URL=https://your-authorized-sdk-download/sdk.zip
+
+Otherwise download the **2022 SDK** from Autodesk's 3ds Max API SDK/tools page,
+install/extract it, then set MAXSDK2022 to the folder containing `include`.
+Official page: https://aps.autodesk.com/developer/overview/3ds-max-api
+
+Use Windows SDK override `RWIO_WINSDK_VERSION` only if you deliberately accept
+untested deviation from the original Autodesk 2022 requirements.
+
+Plugin output (if it compiles):
+    lib/amd64/Release/rwio2022.dli
+
+The Python source tests can run on another OS without 3ds Max:
+    python tests/test_algorithms.py
+    python tests/test_project.py
+    python tests/test_build_compat.py
+    python tests/test_max2022_port.py
+
+A 2027-built rwio2027.dli is NOT binary compatible with 3ds Max 2022.
 
 
 QuadrifyAll++
@@ -210,42 +254,25 @@ Vertex-channel display is a viewport/display choice. It does not delete other
 imported vertex channels.
 
 
-OpenPBR Materials
------------------
+Materials in 3ds Max 2022
+-------------------------
 
-The importer option `Import as OpenPBR Materials` creates Autodesk OpenPBR
-materials instead of RWIO's custom RW material. It maps RW diffuse color and
-texture to OpenPBR base color, diffuse alpha or mask textures to geometry
-opacity, bump MatFX to the OpenPBR bump slot, and environment/specular RW
-extension data to the closest OpenPBR coat/specular preview controls.
+The importer uses RW_Material by default to preserve RenderWare material
+extensions. A fallback "Import as Standard Materials" option creates native
+3ds Max Standard (legacy) materials for basic color, alpha, and diffuse textures.
 
-The older MaxScript setting `dffImp.importStdMaterials` is kept as a
-compatibility alias. New scripts can use `dffImp.importOpenPBRMaterials`.
+The old MAXScript setting `dffImp.importStdMaterials` continues to work.
+`dffImp.importOpenPBRMaterials` remains as a backward-compatibility alias,
+but in THIS 2022 port it also selects Standard materials, NOT OpenPBR.
 
-The exporter can write DFFs directly from scene assets that already use Autodesk
-OpenPBR materials. On export, RWIO converts OpenPBR material data to RenderWare
-material data in memory:
+When RW_Material.ms has not been loaded, RWIO tries to create a Standard
+material instead of dereferencing an invalid custom-material pointer.
+Standard material imports do not retain all RenderWare MatFX/env/spec data.
+For highest fidelity, use RW_Material.ms and RW material import.
 
-- base color and base color maps become RW diffuse color/texture
-- geometry opacity maps become RW texture masks
-- bump maps become MatFX bump data
-- coat color/weight becomes environment MatFX and Rockstar EnvMat data
-- specular color/weight becomes Rockstar SpecMat data
-
-The scene materials are not replaced; conversion is only used for the DFF being
-written.
-
-Imported RW texture names are resolved as PNG first. The fallback search order
-is:
-
-    PNG, TGA, BMP, JPG, DDS
-
-If no matching file is found, the generated bitmap path uses `.png`.
-
-Texture lookup first uses 3ds Max's bitmap path resolver and then checks the
-folder of the DFF being imported. This lets sidecar texture files beside the DFF
-drive viewport maps and alpha/cutout detection even when that folder is not in
-Max's bitmap path list.
+Native OpenPBR materials are unavailable in 2022. A newer-version converter
+is archived in scripts/optional-newer-max/ for reference only; do not copy it
+into the 2022 startup scripts folder.
 
 
 Performance And Memory Notes
@@ -298,4 +325,4 @@ Optimization/audit update
 -------------------------
 See AUDIT_AND_CHANGES.md for source fixes, portable tests, and unresolved issues.
 Run Python 3 tests/test_algorithms.py and tests/test_project.py for SDK-independent checks.
-These checks do not replace a 3ds Max 2027 runtime regression test.
+These checks do not replace a 3ds Max 2022 runtime regression test.

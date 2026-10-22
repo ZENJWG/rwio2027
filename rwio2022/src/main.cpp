@@ -2312,6 +2312,7 @@ initMaxscript(void)
 	define_struct_global(_T("explicitNormals"), _T("dffImp"), getExplicitNormals, setExplicitNormals);
 	define_struct_global(_T("prepend"), _T("dffImp"), getPrepend, setPrepend);
 	define_struct_global(_T("importStdMaterials"), _T("dffImp"), getImpStdMat, setImpStdMat);
+	// Legacy alias retained for existing MAXScripts; on Max 2022 it selects Standard materials.
 	define_struct_global(_T("importOpenPBRMaterials"), _T("dffImp"), getImpStdMat, setImpStdMat);
 	define_struct_global(_T("fixMaterialIDs"), _T("dffImp"), getFixKam, setFixKam);
 	define_struct_global(_T("vertexChannelDisplay"), _T("dffImp"), getVertexChannelDisplay, setVertexChannelDisplay);

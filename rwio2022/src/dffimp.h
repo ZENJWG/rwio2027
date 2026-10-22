@@ -2,6 +2,10 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "Max.h"
+// Prevent accidentally producing a DLL linked to a non-2022 SDK.
+#if !defined(MAX_RELEASE) || MAX_RELEASE != 24000
+#error RWIO_2022_requires_the_Autodesk_3ds_Max_2022_R24_SDK
+#endif
 #include <stdio.h>
 #include <direct.h>
 #include <notify.h>
@@ -138,7 +142,7 @@ public:
 	bool enableVertexChannelDisplayForThisImport;
 
 	Mtl *MakeGTAMaterial(rw::Material *m);
-	Mtl *MakeOpenPBRMaterial(rw::Material *m);
+	Mtl *MakeStandardMaterial(rw::Material *m);
 	void makeMaterials(rw::Atomic *a, INode *inode);
 	void makeMesh(rw::Atomic *a, Mesh *maxmesh);
 	void axesHeuristics(rw::Frame *f);

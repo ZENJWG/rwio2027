@@ -775,7 +775,12 @@ DFFImport::MakeGTAMaterial(rw::Material *m)
 	RWIOImportTimer timer(_T("MakeGTAMaterial"));
 	setRWDelegateUpdatesSuppressed(true);
 	Mtl *mat = (Mtl*)ifc->CreateInstance(SClass_ID(MATERIAL_CLASS_ID), Class_ID(0x29b71842, 0x52508b70));
-	IParamBlock2 *pb = mat->GetParamBlock(0);
+	if(mat == NULL || mat->NumParamBlocks() < 2 ||
+       mat->GetParamBlock(0) == NULL || mat->GetParamBlock(1) == NULL){
+        setRWDelegateUpdatesSuppressed(false);
+        return MakeStandardMaterial(m);
+    }
+    IParamBlock2 *pb = mat->GetParamBlock(0);
 
 	pb->SetValue(mat_color, 0, Color(m->color.red/255.0f, m->color.green/255.0f, m->color.blue/255.0f));
 	pb->SetValue(mat_coloralpha, 0, m->color.alpha/255.0f);
@@ -875,81 +880,36 @@ DFFImport::MakeGTAMaterial(rw::Material *m)
 }
 
 Mtl*
-DFFImport::MakeOpenPBRMaterial(rw::Material *m)
+DFFImport::MakeStandardMaterial(rw::Material *m)
 {
-	using namespace rw;
-	using namespace gta;
+    // 3ds Max 2022 does not have native OpenPBR_Material.
+    // Standard material is a deliberately reduced-fidelity alternative to RW_Material:
+    // advanced RenderWare extensions are preserved only when importing as RW_Material.
+    RWIOImportTimer timer(_T("MakeStandardMaterial"));
+    StdMat *mat = (StdMat*)NewDefaultStdMat();
+    if(mat == NULL || m == NULL)
+        return mat;
 
-	RWIOImportTimer timer(_T("MakeOpenPBRMaterial"));
-	Mtl *mat = createOpenPBRMaterial();
-	setOpenPBRColor(mat, _T("base_color"), m->color.red, m->color.green, m->color.blue);
-	setOpenPBRFloat(mat, _T("base_weight"), m->surfaceProps.diffuse);
-	setOpenPBRFloat(mat, _T("specular_weight"), m->surfaceProps.specular);
-	setOpenPBRFloat(mat, _T("specular_roughness"), 1.0f - std::min(std::max(m->surfaceProps.specular, 0.0f), 1.0f));
+    mat->SetDiffuse(Color(m->color.red/255.0f,
+                          m->color.green/255.0f,
+                          m->color.blue/255.0f), 0);
+    mat->SetOpacity(m->color.alpha/255.0f, 0);
+    mat->SetShinStr(m->surfaceProps.specular, 0);
 
-	BitmapTex *diffmap = makeTexture(m->texture);
-	setOpenPBRBaseColorMap(mat, diffmap, m);
-	bool forceOpacity = m && (m->color.alpha < 255 || (m->texture && m->texture->mask[0]));
-	rwMaterialNeedsOpacityMap(m, diffmap);
-	setOpenPBROpacityMapFromDiffuse(mat, diffmap, forceOpacity);
-	mat->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED, TRUE);
-	reloadTextureIfFound(diffmap);
+    if(m->texture){
+        BitmapTex *diffmap = makeTexture(m->texture);
+        if(diffmap){
+            if(m->texture->mask[0] || textureHasAlpha(diffmap))
+                useTextureAlpha(diffmap);
+            mat->SetSubTexmap(ID_DI, diffmap);
+            mat->EnableMap(ID_DI, TRUE);
+            reloadTextureIfFound(diffmap);
+        }
+    }
 
-	MatFX *matfx = *PLUGINOFFSET(MatFX*, m, matFXGlobals.materialOffset);
-	int32 idx;
-	BitmapTex *bmtex;
-	if(matfx){
-		switch(matfx->type){
-		case MatFX::BUMPMAP:
-			idx = matfx->getEffectIndex(MatFX::BUMPMAP);
-			assert(idx >= 0);
-			bmtex = makeTexture(matfx->fx[idx].bump.bumpedTex);
-			setOpenPBRMap(mat, _T("bump_map"), bmtex);
-			setOpenPBRFloat(mat, _T("bump_map_amt"), matfx->fx[idx].bump.coefficient);
-			reloadTextureIfFound(bmtex);
-			break;
-	
-		case MatFX::ENVMAP:
-			idx = matfx->getEffectIndex(MatFX::ENVMAP);
-			assert(idx >= 0);
-			bmtex = makeTexture(matfx->fx[idx].env.tex);
-			setOpenPBRMap(mat, _T("coat_color_map"), bmtex);
-			setOpenPBRFloat(mat, _T("coat_weight"), matfx->fx[idx].env.coefficient);
-			reloadTextureIfFound(bmtex);
-			break;
-	
-		case MatFX::BUMPENVMAP:
-			idx = matfx->getEffectIndex(MatFX::ENVMAP);
-			assert(idx >= 0);
-			bmtex = makeTexture(matfx->fx[idx].env.tex);
-			setOpenPBRMap(mat, _T("coat_color_map"), bmtex);
-			setOpenPBRFloat(mat, _T("coat_weight"), matfx->fx[idx].env.coefficient);
-			reloadTextureIfFound(bmtex);
-			idx = matfx->getEffectIndex(MatFX::BUMPMAP);
-			assert(idx >= 0);
-			bmtex = makeTexture(matfx->fx[idx].bump.bumpedTex);
-			setOpenPBRMap(mat, _T("bump_map"), bmtex);
-			setOpenPBRFloat(mat, _T("bump_map_amt"), matfx->fx[idx].bump.coefficient);
-			reloadTextureIfFound(bmtex);
-			break;
-		}
-	}
-
-	EnvMat *env = *PLUGINOFFSET(EnvMat*, m, envMatOffset);
-	if(env)
-		setOpenPBRFloat(mat, _T("coat_weight"), env->shininess/255.0f);
-
-	SpecMat *spec = *PLUGINOFFSET(SpecMat*, m, specMatOffset);
-	if(spec){
-		setOpenPBRFloat(mat, _T("specular_weight"), spec->specularity);
-		bmtex = makeTexture(spec->texture);
-		setOpenPBRMap(mat, _T("specular_color_map"), bmtex);
-		reloadTextureIfFound(bmtex);
-	}
-
-	mat->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED, TRUE);
-	mat->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
-	return mat;
+    mat->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED, TRUE);
+    mat->NotifyDependents(FOREVER, PART_TEXMAP | PART_MTL, REFMSG_CHANGE);
+    return mat;
 }
 
 void
@@ -982,7 +942,7 @@ DFFImport::makeMaterials(rw::Atomic *a, INode *inode)
 		rw::Material *m = g->matList.materials[i];
 		Mtl *mat;
 		if(importStdMaterials)
-			mat = MakeOpenPBRMaterial(m);
+			mat = MakeStandardMaterial(m);
 		else
 			mat = MakeGTAMaterial(m);
 
@@ -3541,7 +3501,7 @@ ImportDlgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			addTooltip(hWnd, tooltip, IDC_ANGLE, _T("Auto Smooth angle in degrees. Adjacent faces below this angle can share smoothing."));
 			addTooltip(hWnd, tooltip, IDC_ANGLESPIN, _T("Adjusts the Auto Smooth angle in degrees."));
 			addTooltip(hWnd, tooltip, IDC_EXPLNORM, (imp && imp->dffHasNormalData) ? explicitNormalsTip : explicitNormalsMissingTip);
-			addTooltip(hWnd, tooltip, IDC_STDMAT, _T("Imports materials as OpenPBR materials instead of the custom RW material."));
+			addTooltip(hWnd, tooltip, IDC_STDMAT, _T("Imports 3ds Max Standard materials; select RW Material to preserve RenderWare extensions."));
 			addTooltip(hWnd, tooltip, IDC_FIXKAM, _T("Rebuilds face material IDs from RenderWare mesh sections for DFFs whose triangle material IDs are wrong or missing."));
 			addTooltip(hWnd, tooltip, IDC_VERTCHANNELDISPLAY, (imp && imp->dffHasVertexChannelData) ? vertexChannelTip : vertexChannelMissingTip);
 			addTooltip(hWnd, tooltip, IDC_VERTCHANNELTYPE, _T("Chooses which vertex channel Max displays: color, illumination, or alpha."));

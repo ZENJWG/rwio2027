@@ -1,3 +1,7 @@
+# Historical 2027 optimization audit (carried into the 2022 source port)
+
+**Note:** This file describes source optimizations originally made for the 2027 branch. It does not establish 2022 build or runtime compatibility. See PORTING_NOTES_2022.md.
+
 # RWIO 2027: source audit and optimization pass
 
 Scope: supplied RWIO project (five C++ import/export modules, plugin/UI code,

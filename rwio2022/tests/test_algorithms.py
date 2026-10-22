@@ -2,7 +2,7 @@
 """Portable algorithm tests: compiles extracted RWIO C++ functions with stub SDK types.
 
 Run: python tests/test_algorithms.py
-Requires a C++20 compiler (g++/clang++). Does not need the Autodesk SDK.
+Requires a C++14 compiler (g++/clang++). Does not need the Autodesk SDK.
 """
 import os
 from pathlib import Path
@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / "test.cpp"
     binary = Path(tmp) / ("test.exe" if os.name == "nt" else "test")
     path.write_text(cxx)
-    subprocess.run([compiler, "-std=c++20", "-O2", "-Wall", "-Wextra",
+    subprocess.run([compiler, "-std=c++14", "-O2", "-Wall", "-Wextra",
                     "-o", str(binary), str(path)], check=True)
     subprocess.run([str(binary)], check=True)
 print("PASS: comparator, time, quantization, and skin spatial-index tests")

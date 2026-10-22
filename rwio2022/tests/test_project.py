@@ -15,7 +15,7 @@ assert match.group(1).strip() == startup.strip(), (
 # Ensure the output artifact name agrees between the project and the builder.
 premake = (ROOT / "premake5.lua").read_text()
 build = (ROOT / "build.bat").read_text()
-assert 'targetname "rwio2027"' in premake
+assert 'targetname "rwio2022"' in premake
 assert 'targetextension ".dli"' in premake
-assert 'rwio2027.dli' in build
+assert 'rwio2022.dli' in build
 print("PASS: embedded MAXScript and external script are synchronized; build output matches")

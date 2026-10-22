@@ -1,19 +1,19 @@
--- RWIO for 3ds Max 2027
+-- RWIO for 3ds Max 2022
 --
 -- Environment overrides:
 --   LIBRW       -> librw root
 --   LIBRWGTA    -> librwgta root
---   MAXSDK2027  -> 3ds Max 2027 SDK maxsdk folder
+--   MAXSDK2022  -> 3ds Max 2022 SDK maxsdk folder
 --
 -- Example:
---   set MAXSDK2027=C:\Program Files\Autodesk\3ds Max 2027 SDK\maxsdk
+--   set MAXSDK2022=C:\Program Files\Autodesk\3ds Max 2022 SDK\maxsdk
 --   premake5 vs2022
 --
 -- This script intentionally generates Release only; Debug is disabled for this plugin build.
 
-local Librw = os.getenv("LIBRW") or path.getabsolute("../../librw-master/librw-master")
-local Librwgta = os.getenv("LIBRWGTA") or path.getabsolute("../../librwgta-master/librwgta-master")
-local MaxSdk2027 = os.getenv("MAXSDK2027") or "C:/Program Files/Autodesk/3ds Max 2027 SDK/maxsdk"
+local Librw = os.getenv("LIBRW") or path.getabsolute("deps/librw")
+local Librwgta = os.getenv("LIBRWGTA") or path.getabsolute("deps/librwgta")
+local MaxSdk2022 = os.getenv("MAXSDK2022") or "C:/Program Files/Autodesk/3ds Max 2022 SDK/maxsdk"
 
 local function firstExistingDir(paths)
 	for _, p in ipairs(paths) do
@@ -25,28 +25,28 @@ local function firstExistingDir(paths)
 end
 
 local MaxSdkLibDir = firstExistingDir({
-	path.join(MaxSdk2027, "lib/x64/Release"),
-	path.join(MaxSdk2027, "x64/lib"),
-	path.join(MaxSdk2027, "lib/x64")
+	path.join(MaxSdk2022, "lib/x64/Release"),
+	path.join(MaxSdk2022, "x64/lib"),
+	path.join(MaxSdk2022, "lib/x64")
 })
 
 workspace "rwio"
 	configurations { "Release" }
 	platforms { "amd64" }
 	location "build"
-	startproject "rwio2027"
+	startproject "rwio2022"
 	system "Windows"
-	systemversion "latest"
-	cppdialect "C++20"
+	systemversion (os.getenv("RWIO_WINSDK_VERSION") or "10.0.17134.0")
+	cppdialect "C++14"
 
 	filter { "platforms:amd64" }
 		architecture "x86_64"
 	filter {}
 
-project "rwio2027"
+project "rwio2022"
 	kind "SharedLib"
 	language "C++"
-	targetname "rwio2027"
+	targetname "rwio2022"
 	targetextension ".dli"
 	targetdir "lib/%{cfg.platform}/Release"
 	objdir "build/obj/%{prj.name}/%{cfg.platform}/Release"
@@ -67,7 +67,7 @@ project "rwio2027"
 	includedirs {
 		Librw,
 		path.join(Librwgta, "src"),
-		path.join(MaxSdk2027, "include")
+		path.join(MaxSdk2022, "include")
 	}
 
 	libdirs {
@@ -122,7 +122,9 @@ project "rwio2027"
 	}
 
 	filter { "action:vs2022" }
-		toolset "v145"
+		toolset "v141"
+	filter { "action:vs2017" }
+		toolset "v141"
 
 
 	filter "configurations:Release"
