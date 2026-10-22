@@ -129,10 +129,12 @@ sortByID(const void *a, const void *b)
 {
 	SortNode *na = (SortNode*)a;
 	SortNode *nb = (SortNode*)b;
-	// sort nodes with no or negative tag to the back
+	// Both missing IDs compare equally. A comparator must return zero for
+	// equivalent elements (otherwise qsort has undefined behaviour).
+	if(na->id < 0 && nb->id < 0) return 0;
 	if(na->id < 0) return 1;
 	if(nb->id < 0) return -1;
-	return na->id - nb->id;
+	return (na->id > nb->id) - (na->id < nb->id);
 }
 
 int
@@ -140,10 +142,11 @@ sortByChildNum(const void *a, const void *b)
 {
 	SortNode *na = (SortNode*)a;
 	SortNode *nb = (SortNode*)b;
-	// sort nodes with no or negative num to the back
+	// Missing childNum is common; equal keys must compare equal.
+	if(na->childNum < 0 && nb->childNum < 0) return 0;
 	if(na->childNum < 0) return 1;
 	if(nb->childNum < 0) return -1;
-	return na->childNum - nb->childNum;
+	return (na->childNum > nb->childNum) - (na->childNum < nb->childNum);
 }
 
 // Importer

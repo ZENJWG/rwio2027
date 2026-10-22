@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "dffimp.h"
+#include <algorithm>
 #include <commctrl.h>
 
 rw::Matrix::Tolerance exportTolerance = { 0.001f, 0.001f, 0.001f };
@@ -104,16 +105,16 @@ getRwCustAttribs(ICustAttribContainer *cc, const TCHAR *datatype)
 		int nca = cc->GetNumCustAttribs();
 		for(int j = 0; j < nca; j++){
 			CustAttrib *a = cc->GetCustAttrib(j);
-			IParamBlock2 *pb = a->GetParamBlock(0);
-			if(pb->NumParams() < 3 ||
+			IParamBlock2 *pb = a ? a->GetParamBlock(0) : NULL;
+			if(pb == NULL || pb->NumParams() < 3 ||
 			   pb->GetParameterType(0) != TYPE_STRING ||
 			   pb->GetParameterType(1) != TYPE_STRING)
 				continue;
 			PARAMTCHAR *name;
 			pb->GetValue(0, 0, name, valid);
-			if(_tcscmp(name, _T("RenderWare")) != 0) continue;
+			if(name == NULL || _tcscmp(name, _T("RenderWare")) != 0) continue;
 			pb->GetValue(1, 0, name, valid);
-			if(_tcscmp(name, datatype) != 0) continue;
+			if(name == NULL || _tcscmp(name, datatype) != 0) continue;
 			return pb;
 		}
 	}
@@ -553,11 +554,11 @@ DFFExport::convertNode(rw::Clump *clump, rw::Frame *frame, INode *node, int flip
 		children[i].node = node->GetChildNode(i);
 		getID(children[i].node, &id);
 		children[i].id = id;
-		children[i].name = node->GetName();
+		children[i].name = children[i].node->GetName();
 		children[i].childNum = getChildNum(children[i].node);
 	}
 
-	qsort(children, numChildren, sizeof(*children), sortByChildNum);
+	std::stable_sort(children, children + numChildren, [](const SortNode &a, const SortNode &b) { return sortByChildNum(&a, &b) < 0; });
 //	qsort(children, numChildren, sizeof(*children), sortByID);
 
 	for(int i = 0; i < numChildren; i++){
@@ -589,11 +590,13 @@ DFFExport::writeDFF(const TCHAR *filename)
 {
 	using namespace rw;
 
+	const auto previousPlatform = rw::platform;
 	rw::platform = PLATFORM_NULL;
 
 	this->rootnode = getRootOfSelection(this->ifc);
 	if(this->rootnode == nil){
 		lprintf(_T("error: nothing selected\n"));
+		rw::platform = previousPlatform;
 		return 0;
 	}
 
@@ -690,6 +693,7 @@ DFFExport::writeDFF(const TCHAR *filename)
 		lprintf(_T("error: couldn't open file\n"));
 		stream.close();
 		clump->destroy();
+		rw::platform = previousPlatform;
 		return 0;
 	}
 	hAnimDoStream = DFFExport::exportHAnim;
@@ -699,7 +703,7 @@ DFFExport::writeDFF(const TCHAR *filename)
 	stream.close();
 	clump->destroy();
 
-	rw::platform = PLATFORM_D3D8;
+	rw::platform = previousPlatform;
 	return 1;
 }
 

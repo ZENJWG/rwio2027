@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "dffimp.h"
+#include <algorithm>
 
 void
 traverseHierarchy(std::vector<INode*> &hierarchy, INode *node)
@@ -18,11 +19,11 @@ traverseHierarchy(std::vector<INode*> &hierarchy, INode *node)
 		children[i].node = node->GetChildNode(i);
 		getID(children[i].node, &id);
 		children[i].id = id;
-		children[i].name = node->GetName();
+		children[i].name = children[i].node->GetName();
 		children[i].childNum = getChildNum(children[i].node);
 	}
 
-	qsort(children, numChildren, sizeof(*children), sortByChildNum);
+	std::stable_sort(children, children + numChildren, [](const SortNode &a, const SortNode &b) { return sortByChildNum(&a, &b) < 0; });
 //	qsort(children, numChildren, sizeof(*children), sortByID);
 
 	for(int i = 0; i < numChildren; i++){
@@ -229,7 +230,7 @@ sortTime(const void *a, const void *b)
 {
 	TimeValue *ta = (TimeValue*)a;
 	TimeValue *tb = (TimeValue*)b;
-	return *ta - *tb;
+	return (*ta > *tb) - (*ta < *tb);
 }
 
 struct NodeFrames
@@ -369,6 +370,10 @@ ANMExport::anmFileWrite(const TCHAR *filename)
 	traverseHierarchy(hierarchy, rootnode);
 
 	int numNodes = (int)hierarchy.size();
+	if(numNodes == 0){
+		lprintf(_T("error: selected hierarchy has no exportable nodes\n"));
+		return 0;
+	}
 	NodeFrames *nodes = new NodeFrames[numNodes];
 
 	float duration = 0.0f;

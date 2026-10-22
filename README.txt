@@ -292,3 +292,10 @@ normal DFF triangle geometry.
 If another tool wants to interoperate with RWIO quad data, it should preserve the
 user data array exactly and should not reorder triangles unless it also remaps
 the per-triangle edge visibility array.
+
+
+Optimization/audit update
+-------------------------
+See AUDIT_AND_CHANGES.md for source fixes, portable tests, and unresolved issues.
+Run Python 3 tests/test_algorithms.py and tests/test_project.py for SDK-independent checks.
+These checks do not replace a 3ds Max 2027 runtime regression test.

@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "dffimp.h"
+#include <float.h>
 
 #define COLL 0x4C4C4F43
 
@@ -30,6 +31,8 @@ getSurface(IParamBlock2 *pb)
 {
 	Interval valid = FOREVER;
 	int surf = 0;
+	if(pb == NULL)
+		return surf;
 	for(int i = 0; i < pb->NumParams(); i++){
 		if(pb->GetLocalName(i) == MSTR(TEXT("surf"))){
 			pb->GetValue(i, 0, surf, valid);
@@ -44,6 +47,8 @@ getPieceType(IParamBlock2 *pb)
 {
 	Interval valid = FOREVER;
 	int piece = 0;
+	if(pb == NULL)
+		return piece;
 	for(int i = 0; i < pb->NumParams(); i++)
 		if(pb->GetLocalName(i) == MSTR(TEXT("piece"))){
 			pb->GetValue(i, 0, piece, valid);
@@ -87,13 +92,22 @@ convertBox(CColBox *colbox, INode *boxnode)
 	param->GetValue(BOXOBJ_LENGTH, 0, length, valid);
 	param->GetValue(BOXOBJ_WIDTH, 0, width, valid);
 	param->GetValue(BOXOBJ_HEIGHT, 0, height, valid);
-	Point3 min = pos - Point3(width/2.0f, length/2.0f, 0.0f);
-	Point3 max = pos + Point3(width/2.0f, length/2.0f, height);
-	min = objectTM * min;
-	max = objectTM * max;
-
-	colbox->box.min.set(MIN(min.x, max.x), MIN(min.y, max.y), MIN(min.z, max.z));
-	colbox->box.max.set(MAX(min.x, max.x), MAX(min.y, max.y), MAX(min.z, max.z));
+	Point3 localMin = pos - Point3(width/2.0f, length/2.0f, 0.0f);
+	Point3 localMax = pos + Point3(width/2.0f, length/2.0f, height);
+	// Two transformed corners are not sufficient for a rotated box AABB.
+	Point3 min(FLT_MAX, FLT_MAX, FLT_MAX);
+	Point3 max(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+	for(int x = 0; x < 2; ++x)
+		for(int y = 0; y < 2; ++y)
+			for(int z = 0; z < 2; ++z){
+				Point3 corner(x ? localMax.x : localMin.x,
+					y ? localMax.y : localMin.y, z ? localMax.z : localMin.z);
+				Point3 p = objectTM * corner;
+				min.x = MIN(min.x, p.x); min.y = MIN(min.y, p.y); min.z = MIN(min.z, p.z);
+				max.x = MAX(max.x, p.x); max.y = MAX(max.y, p.y); max.z = MAX(max.z, p.z);
+			}
+	colbox->box.min.set(min.x, min.y, min.z);
+	colbox->box.max.set(max.x, max.y, max.z);
 	colbox->surface = getSurface(pb);
 	colbox->piece = getPieceType(pb);
 }
@@ -271,38 +285,48 @@ COLExport::writeCOL1(const TCHAR* filename)
 			convertBox(&colmodel->boxes[i], boxes[i]);
 	}
 
+	// Convert each collision mesh only once. Previous code evaluated and converted
+	// each node twice; asserts alone would crash Release builds for non-mesh objects.
+	struct CollisionMeshSource {
+		INode *node;
+		TriObject *tri;
+		bool temporary;
+	};
+	std::vector<CollisionMeshSource> sources;
+	int numVertices = 0;
 	colmodel->numLines = 0;
 	colmodel->numTriangles = 0;
-	int numVertices = 0;
-	for (size_t i = 0; i < meshes.size(); i++) {
-		Mesh* m = NULL;
-		::Object* o = meshes[i]->EvalWorldState(0).obj;
-		assert(o->CanConvertToType(Class_ID(TRIOBJ_CLASS_ID, 0)));
-		TriObject* tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
-		m = &tri->GetMesh();
-		colmodel->numTriangles += m->getNumFaces();
-		numVertices += m->getNumVerts();
-		if (tri != o)
-			tri->DeleteMe();
+	for(size_t i = 0; i < meshes.size(); i++){
+		::Object *obj = meshes[i]->EvalWorldState(0).obj;
+		if(obj == NULL || !obj->CanConvertToType(triObjectClassID)){
+			lprintf(_T("RWIO COL: skipping non-convertible mesh\n"));
+			continue;
+		}
+		TriObject *tri = (TriObject*)obj->ConvertToType(0, triObjectClassID);
+		if(tri == NULL)
+			continue;
+		sources.push_back({ meshes[i], tri, tri != obj });
+		::Mesh &mesh = tri->GetMesh();
+		colmodel->numTriangles += mesh.getNumFaces();
+		numVertices += mesh.getNumVerts();
 	}
-	if (numVertices && colmodel->numTriangles) {
+	if(numVertices > 0 && colmodel->numTriangles > 0){
 		colmodel->triangles = new CColTriangle[colmodel->numTriangles];
 		colmodel->vertices = new rw::V3d[numVertices];
 	}
 	colmodel->numTriangles = 0;
-	numVertices = 0;
-	for (size_t i = 0; i < meshes.size(); i++) {
-		Mesh* m = NULL;
-		::Object* o = meshes[i]->EvalWorldState(0).obj;
-		assert(o->CanConvertToType(Class_ID(TRIOBJ_CLASS_ID, 0)));
-		TriObject* tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
-		m = &tri->GetMesh();
-		convertMesh(colmodel, numVertices, meshes[i], m);
-		colmodel->numTriangles += m->getNumFaces();
-		numVertices += m->getNumVerts();
-		if (tri != o)
-			tri->DeleteMe();
+	int vertOffset = 0;
+	for(size_t i = 0; i < sources.size(); i++){
+		Mesh &mesh = sources[i].tri->GetMesh();
+		if(mesh.getNumFaces() > 0 && mesh.getNumVerts() > 0){
+			convertMesh(colmodel, vertOffset, sources[i].node, &mesh);
+			colmodel->numTriangles += mesh.getNumFaces();
+		}
+		vertOffset += mesh.getNumVerts();
 	}
+	for(size_t i = 0; i < sources.size(); i++)
+		if(sources[i].temporary)
+			sources[i].tri->DeleteMe();
 	calculateBounds(colmodel, rootnode);
 
 	rw::StreamFile stream;
@@ -315,6 +339,8 @@ COLExport::writeCOL1(const TCHAR* filename)
 	if (stream.open(filename, "wb") == NULL) {
 #endif
 		lprintf(_T("error: couldn't open file\n"));
+		delete[] colname;
+		delete colmodel;
 		return 0;
 	}
 

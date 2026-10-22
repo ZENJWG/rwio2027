@@ -1,3 +1,5 @@
+#pragma once
+
 #define _CRT_SECURE_NO_WARNINGS
 #include "Max.h"
 #include <stdio.h>
@@ -30,7 +32,8 @@
 
 #include <rw.h>
 #include <rwgta.h>
-#include <collisions.h>
+// <rwgta.h> already includes <collisions.h>.
+// Do not include it again: upstream collisions.h has no include guard.
 
 #include "dffimp_res.h"
 

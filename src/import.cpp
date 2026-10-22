@@ -6,6 +6,8 @@
 #include <string>
 #include <algorithm>
 #include <float.h>
+#include <cmath>
+#include <climits>
 
 int DFFImport::convertHierarchy = 1;
 int DFFImport::autoSmooth = 0;
@@ -1456,9 +1458,10 @@ struct RWIOProjectionGridKeyHash
 	size_t operator()(const RWIOProjectionGridKey &key) const
 	{
 		// Large odd constants keep neighbouring grid cells reasonably separated.
-		size_t hx = (size_t)(key.x * 73856093);
-		size_t hy = (size_t)(key.y * 19349663);
-		size_t hz = (size_t)(key.z * 83492791);
+		// Unsigned arithmetic avoids UB for large or negative quantized coords.
+		size_t hx = (size_t)(static_cast<unsigned int>(key.x) * 73856093u);
+		size_t hy = (size_t)(static_cast<unsigned int>(key.y) * 19349663u);
+		size_t hz = (size_t)(static_cast<unsigned int>(key.z) * 83492791u);
 		return hx ^ hy ^ hz;
 	}
 };
@@ -1469,8 +1472,13 @@ static const float RWIO_PROJECTION_GRID_INV = 1000.0f;
 static int
 rwioProjectionQuantize(float v)
 {
-	float scaled = v * RWIO_PROJECTION_GRID_INV;
-	return (int)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+	const double scaled = static_cast<double>(v) * RWIO_PROJECTION_GRID_INV;
+	// Keep a one-cell margin for neighbourhood searches and avoid UB when
+	// malformed source coordinates contain NaN/Inf or exceed int range.
+	if(!std::isfinite(scaled)) return 0;
+	if(scaled >= static_cast<double>(INT_MAX - 2)) return INT_MAX - 2;
+	if(scaled <= static_cast<double>(INT_MIN + 2)) return INT_MIN + 2;
+	return static_cast<int>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
 }
 
 static RWIOProjectionGridKey
@@ -2511,36 +2519,63 @@ getBonePositions(rw::Skin *skin, rw::HAnimHierarchy *hier, Point3 *positions)
 	}
 }
 
-#define SQ(a) ((a)*(a))
-
-static int
-findVertex(rw::Geometry *g, Point3 *v)
+// Skin weights are matched against imported RW vertices by position. Build a
+// spatial index once per skinned atomic rather than scanning every RW vertex
+// for every 3ds Max vertex (quadratic on large character models).
+struct RwioSkinVertexIndex {
+	std::unordered_map<RWIOProjectionGridKey, std::vector<int>, RWIOProjectionGridKeyHash> cells;
+};
+static void
+buildSkinVertexIndex(rw::Geometry *geo, RwioSkinVertexIndex &index)
 {
-	using namespace rw;
-
+	index.cells.reserve(geo->numVertices);
+	const rw::V3d *verts = geo->morphTargets[0].vertices;
+	for(int i = 0; i < geo->numVertices; ++i){
+		Point3 p(verts[i].x, verts[i].y, verts[i].z);
+		index.cells[rwioProjectionKey(p)].push_back(i);
+	}
+}
+static int
+findVertex(rw::Geometry *geo, const RwioSkinVertexIndex &index, const Point3 &p)
+{
+	const rw::V3d *verts = geo->morphTargets[0].vertices;
 	int closest = -1;
-	float dist = 9999999.9f;
-	V3d *verts = g->morphTargets[0].vertices;
-	for(int32 i = 0; i < g->numVertices; i++){
-		float d = SQ(verts[i].x-v->x) + SQ(verts[i].y-v->y) + SQ(verts[i].z-v->z);
-		if(d < dist){
-			dist = d;
-			closest = i;
-		}
+	float bestDistance = FLT_MAX;
+	RWIOProjectionGridKey key = rwioProjectionKey(p);
+	for(int dx = -1; dx <= 1; ++dx)
+		for(int dy = -1; dy <= 1; ++dy)
+			for(int dz = -1; dz <= 1; ++dz){
+				RWIOProjectionGridKey neighbour = { key.x + dx, key.y + dy, key.z + dz };
+				auto it = index.cells.find(neighbour);
+				if(it == index.cells.end()) continue;
+				for(int v : it->second){
+					float x = verts[v].x - p.x, y = verts[v].y - p.y, z = verts[v].z - p.z;
+					float d = x*x + y*y + z*z;
+					if(d < bestDistance){ bestDistance = d; closest = v; }
+				}
+			}
+	if(closest >= 0) return closest;
+	// Preserve the legacy nearest-vertex semantics for unusual transformed meshes.
+	for(int i = 0; i < geo->numVertices; ++i){
+		float x = verts[i].x - p.x, y = verts[i].y - p.y, z = verts[i].z - p.z;
+		float d = x*x + y*y + z*z;
+		if(d < bestDistance){ bestDistance = d; closest = i; }
 	}
 	return closest;
 }
 
-static ::Mesh*
-getMesh(INode *node, TimeValue t)
+// Caller must DeleteMe() a converted TriObject when it differs from
+// EvalWorldState().obj. Returning Mesh* alone discarded that ownership.
+static TriObject*
+getTriObject(INode *node, TimeValue t, bool &temporary)
 {
-	::Object *o = node->EvalWorldState(t).obj;
-	if(o->CanConvertToType(Class_ID(TRIOBJ_CLASS_ID, 0))){
-		TriObject *tri = (TriObject*)o->ConvertToType(t, Class_ID(TRIOBJ_CLASS_ID, 0));
-		// TODO: if tri != o delete!
-		return &tri->GetMesh();
-	}
-	return nil;
+	temporary = false;
+	::Object *obj = node->EvalWorldState(t).obj;
+	if(obj == NULL || !obj->CanConvertToType(triObjectClassID))
+		return NULL;
+	TriObject *tri = (TriObject*)obj->ConvertToType(t, triObjectClassID);
+	temporary = tri != NULL && tri != obj;
+	return tri;
 }
 
 static ::Object*
@@ -3358,16 +3393,22 @@ DFFImport::dffFileRead(const TCHAR *filename)
 		Tab<float> wt;
 		bt.Resize(4);
 		wt.Resize(4);
-		skinNode->EvalWorldState(t);
 		float *w;
 		uint8 *ix;
-		::Mesh *maxmesh = getMesh(skinNode, t);
-		assert(maxmesh != nil);
+		bool temporaryTri = false;
+		TriObject *skinTri = getTriObject(skinNode, t, temporaryTri);
+		if(skinTri == NULL){
+			lprintf(_T("RWIO: skin node cannot be converted to a triangle mesh\n"));
+			continue;
+		}
+		::Mesh *maxmesh = &skinTri->GetMesh();
 		int numVerts = maxmesh->getNumVerts();
+		RwioSkinVertexIndex vertexIndex;
+		buildSkinVertexIndex(skinInfo[i].atomic->geometry, vertexIndex);
 		for(int j = 0; j < numVerts; j++){
 			Point3 pos = maxmesh->getVert(j);
-			int idx = findVertex(skinInfo[i].atomic->geometry, &pos);
-			assert(idx >= 0);
+			int idx = findVertex(skinInfo[i].atomic->geometry, vertexIndex, pos);
+			if(idx < 0) continue;
 			w = &rwskin->weights[idx*4];
 			ix = &rwskin->indices[idx*4];
 			bt.ZeroCount();
@@ -3380,6 +3421,8 @@ DFFImport::dffFileRead(const TCHAR *filename)
 			}
 			BOOL res = skinImp->AddWeights(skinNode, j, bt, wt);
 		}
+		if(temporaryTri)
+			skinTri->DeleteMe();
 	}
 	rwioImportDebug(_T("skin setup: %.3f s (%d skinned atomic(s))"), rwioSeconds() - skinStart, numSkinned);
 

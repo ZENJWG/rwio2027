@@ -500,6 +500,10 @@ convertMaterials(rw::Geometry *geo, INode *node)
 		}
 	}else
 		geo->matList.appendMaterial(convertMaterial(mtl));
+	// Multi/Sub-Object materials can have zero slots; prevent modulo by zero
+	// when assigning face material IDs during geometry conversion.
+	if(geo->matList.numMaterials == 0)
+		geo->matList.appendMaterial(rw::Material::create());
 }
 
 // Gets the first n consecutive UV channels
@@ -587,6 +591,8 @@ DFFExport::convertGeometry(INode *node, int **vertexmap)
 	using namespace rw;
 
 	::Object *obj = node->EvalWorldState(0).obj;
+	if(obj == NULL || !obj->CanConvertToType(triObjectClassID))
+		return nil;
 	TriObject *tri = (TriObject*)obj->ConvertToType(0, triObjectClassID);
 	// This happens with "Spray" objects for instance...
 	// TODO: figure out a better way of handling this
@@ -782,20 +788,22 @@ DFFExport::convertSkin(rw::Geometry *geo, rw::Frame *frame, INode *node, Modifie
 	int numBones = skin->GetNumBones();
 	// NB: numBones need not be equal to numNodes!
 
-	rw::Skin *rwskin = new rw::Skin;
-	rw::Skin::set(geo, rwskin);
-	//lprintf("BONES: %d %d\n", skin->GetNumBones(), skin->GetNumBonesFlat());
-	rwskin->init(this->numNodes, numBones, geo->numVertices);
 	ISkinContextData *skindata = skin->GetContextInterface(node);
 	if(skindata == NULL)
 		return;
+	::Object *obj = node->EvalWorldState(0).obj;
+	if(obj == NULL || !obj->CanConvertToType(triObjectClassID))
+		return;
+	TriObject *tri = (TriObject*)obj->ConvertToType(0, triObjectClassID);
+	if(tri == NULL)
+		return;
+	rw::Skin *rwskin = new rw::Skin;
+	rw::Skin::set(geo, rwskin);
+	rwskin->init(this->numNodes, numBones, geo->numVertices);
 	float *weights = rwskin->weights;
 	uint8 *indices = rwskin->indices;
 	memset(weights, 0, geo->numVertices*4*sizeof(float));
 	memset(indices, 0, geo->numVertices*4*sizeof(uint8));
-
-	::Object *obj = node->EvalWorldState(0).obj;
-	TriObject *tri = (TriObject*)obj->ConvertToType(0, triObjectClassID);
 	::Mesh *mesh = &tri->mesh;
 
 	int numWeights;
