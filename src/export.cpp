@@ -1,4 +1,6 @@
+#define NOMINMAX
 #include "dffimp.h"
+#include <commctrl.h>
 
 rw::Matrix::Tolerance exportTolerance = { 0.001f, 0.001f, 0.001f };
 
@@ -46,6 +48,7 @@ int DFFExport::worldSpace = 0;
 
 int DFFExport::exportHAnim = 0;
 int DFFExport::exportSkin = 0;
+int DFFExport::exportQuadData = 1;
 
 int DFFExport::exportUserData = 0;
 int DFFExport::exportObjNames = 0;
@@ -163,6 +166,7 @@ customFrameData(rw::Frame *frame, INode *node)
 #ifdef _UNICODE
 		char fuckmax[MAX_PATH];
 		wcstombs(fuckmax, name, MAX_PATH);
+		fuckmax[MAX_PATH-1] = '\0';
 		strncpy(rwname, fuckmax, 24);
 #else
 		strncpy(rwname, name, 24);
@@ -346,7 +350,9 @@ DFFExport::convertLight(rw::Frame *frame, rw::Clump *clump, INode *node)
 		snprintf(shapename, 128, "%sShape", getAsciiStr(node->GetName()));
 		UserDataArray::lightGet(rwlight, ud)->setString(0, shapename);
 	}
-	setUserProps(getBaseObject(node)->GetCustAttribContainer(), _T("Texture"), UserDataExtension::get(rwlight));
+	::Object *base = getBaseObject(node);
+	if(base)
+		setUserProps(base->GetCustAttribContainer(), _T("Texture"), UserDataExtension::get(rwlight));
 }
 
 void
@@ -374,7 +380,9 @@ DFFExport::convertCamera(rw::Frame *frame, rw::Clump *clump, INode *node)
 		snprintf(shapename, 128, "%sShape", getAsciiStr(node->GetName()));
 		UserDataArray::cameraGet(rwcam, ud)->setString(0, shapename);
 	}
-	setUserProps(getBaseObject(node)->GetCustAttribContainer(), _T("Camera"), UserDataExtension::get(rwcam));
+	::Object *base = getBaseObject(node);
+	if(base)
+		setUserProps(base->GetCustAttribContainer(), _T("Camera"), UserDataExtension::get(rwcam));
 }
 
 void
@@ -505,8 +513,11 @@ DFFExport::convertNode(rw::Clump *clump, rw::Frame *frame, INode *node, int flip
 		UserDataArray::frameGet(frame, ud)->setString(0, getAsciiStr(node->GetName()));
 	}
 	ICustAttribContainer *attribs = node->GetCustAttribContainer();
-	if(attribs == nil)
-		attribs = getBaseObject(node)->GetCustAttribContainer();
+	if(attribs == nil){
+		::Object *base = getBaseObject(node);
+		if(base)
+			attribs = base->GetCustAttribContainer();
+	}
 	setUserProps(attribs, _T("Transform"), UserDataExtension::get(frame));
 
 	int thisIndex = -1;
@@ -693,7 +704,7 @@ DFFExport::writeDFF(const TCHAR *filename)
 }
 
 static struct {
-	TCHAR *text;
+	const TCHAR *text;
 	int version;
 } gameversions[] = {
 	{ _T("GTA III PS2 (3.1)"), 0x31000 },
@@ -706,6 +717,80 @@ static struct {
 	{ _T("Latest (3.7)"),   0x37002 },
 	{ NULL, 0 }
 };
+
+static int
+findGameVersionIndex(int version)
+{
+	for(int i = 0; gameversions[i].text; i++){
+		if(gameversions[i].version == version)
+			return i;
+	}
+	return -1;
+}
+
+static void
+syncGameVersionCombo(HWND hWnd)
+{
+	HWND cb = GetDlgItem(hWnd, IDC_GAME);
+	if(cb == NULL)
+		return;
+	int sel = findGameVersionIndex(DFFExport::version);
+	if(sel >= 0)
+		ComboBox_SetCurSel(cb, sel);
+	else
+		ComboBox_SetCurSel(cb, -1);
+}
+
+static HWND
+createTooltip(HWND parent)
+{
+	INITCOMMONCONTROLSEX icc = {};
+	icc.dwSize = sizeof(icc);
+	icc.dwICC = ICC_WIN95_CLASSES;
+	InitCommonControlsEx(&icc);
+
+	HWND tooltip = CreateWindowEx(WS_EX_TOPMOST, TOOLTIPS_CLASS, NULL,
+		WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+		CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		parent, NULL, hInstance, NULL);
+	if(tooltip){
+		SendMessage(tooltip, TTM_ACTIVATE, TRUE, 0);
+		SendMessage(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+	}
+	return tooltip;
+}
+
+static void
+addTooltip(HWND parent, HWND tooltip, int controlId, const TCHAR *text)
+{
+	if(tooltip == NULL)
+		return;
+	HWND control = GetDlgItem(parent, controlId);
+	if(control == NULL)
+		return;
+
+	TOOLINFO toolInfo = {};
+	toolInfo.cbSize = sizeof(toolInfo);
+	toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+	toolInfo.hwnd = parent;
+	toolInfo.uId = (UINT_PTR)control;
+	toolInfo.lpszText = (LPTSTR)text;
+	SendMessage(tooltip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+
+	// Disabled controls do not receive mouse messages, so also cover their
+	// dialog rectangle through the parent window.
+	RECT rect;
+	GetWindowRect(control, &rect);
+	MapWindowPoints(NULL, parent, (LPPOINT)&rect, 2);
+	TOOLINFO rectToolInfo = {};
+	rectToolInfo.cbSize = sizeof(rectToolInfo);
+	rectToolInfo.uFlags = TTF_SUBCLASS;
+	rectToolInfo.hwnd = parent;
+	rectToolInfo.uId = (UINT_PTR)controlId;
+	rectToolInfo.rect = rect;
+	rectToolInfo.lpszText = (LPTSTR)text;
+	SendMessage(tooltip, TTM_ADDTOOL, 0, (LPARAM)&rectToolInfo);
+}
 
 static void
 setVersionFields(HWND hWnd)
@@ -753,6 +838,17 @@ ExpNameDlgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		edit = GetICustEdit(GetDlgItem(hWnd, IDC_NAME_ENTRY));
 		edit->SetText(DFFExport::exportObjNames_Entry);
 		ReleaseICustEdit(edit);
+
+		{
+			HWND tooltip = createTooltip(hWnd);
+			addTooltip(hWnd, tooltip, IDC_NAME_ENTRY, _T("Name entry used for the selected object-name user data arrays."));
+			addTooltip(hWnd, tooltip, IDC_NAME_GEO, _T("Writes geometry object-name user data."));
+			addTooltip(hWnd, tooltip, IDC_NAME_FRM, _T("Writes frame object-name user data."));
+			addTooltip(hWnd, tooltip, IDC_NAME_CAM, _T("Writes camera object-name user data."));
+			addTooltip(hWnd, tooltip, IDC_NAME_LGT, _T("Writes light object-name user data."));
+			addTooltip(hWnd, tooltip, IDC_NAME_MAT, _T("Writes material object-name user data."));
+			addTooltip(hWnd, tooltip, IDC_NAME_TEX, _T("Writes texture object-name user data."));
+		}
 
 		break;
 	case WM_COMMAND:
@@ -802,6 +898,7 @@ ExportDlgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		CheckDlgButton(hWnd, IDC_HANIM, DFFExport::exportHAnim);
 		CheckDlgButton(hWnd, IDC_SKINNING, DFFExport::exportSkin);
+		CheckDlgButton(hWnd, IDC_QUADDATA, DFFExport::exportQuadData);
 
 		CheckDlgButton(hWnd, IDC_USERDATA, DFFExport::exportUserData);
 		CheckDlgButton(hWnd, IDC_OBJNAMES, DFFExport::exportObjNames);
@@ -814,13 +911,41 @@ ExportDlgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		cb = GetDlgItem(hWnd, IDC_GAME);
 		for(int i = 0; gameversions[i].text; i++)
 			ComboBox_AddString(cb, gameversions[i].text);
+		syncGameVersionCombo(hWnd);
+		{
+			HWND tooltip = createTooltip(hWnd);
+			addTooltip(hWnd, tooltip, IDC_LIGHTING, _T("Exports the RenderWare geometry lighting flag."));
+			addTooltip(hWnd, tooltip, IDC_NORMALS, _T("Exports vertex normals so the DFF can preserve mesh shading."));
+			addTooltip(hWnd, tooltip, IDC_PRELIT, _T("Exports vertex prelight colors from Max vertex color data."));
+			addTooltip(hWnd, tooltip, IDC_TRISTRIP, _T("Writes geometry mesh indices as triangle strips instead of triangle lists."));
+			addTooltip(hWnd, tooltip, IDC_QUADDATA, _T("Stores Max triangle edge visibility as RWIO quad display metadata for later re-import."));
+			addTooltip(hWnd, tooltip, IDC_WORLDSPACE, _T("Exports the selected hierarchy in world-space orientation instead of local object space."));
+			addTooltip(hWnd, tooltip, IDC_HANIM, _T("Creates RenderWare HAnim hierarchy data for character or bone hierarchies."));
+			addTooltip(hWnd, tooltip, IDC_SKINNING, _T("Exports Skin modifier weights and bone indices when present."));
+			addTooltip(hWnd, tooltip, IDC_USERDATA, _T("Exports supported Max custom/user data to RenderWare user data arrays."));
+			addTooltip(hWnd, tooltip, IDC_OBJNAMES, _T("Exports object-name user data arrays for enabled object types."));
+			addTooltip(hWnd, tooltip, IDC_NAMES_MORE, _T("Opens object-name user data options."));
+			addTooltip(hWnd, tooltip, IDC_RS_NODENAME, _T("Exports Rockstar node-name extension data."));
+			addTooltip(hWnd, tooltip, IDC_RS_EXTRACOLORS, _T("Exports Rockstar extra vertex color/night color data when available."));
+			addTooltip(hWnd, tooltip, IDC_V1, _T("RenderWare version major nibble."));
+			addTooltip(hWnd, tooltip, IDC_V1SPIN, _T("Adjusts the RenderWare version major nibble."));
+			addTooltip(hWnd, tooltip, IDC_V2, _T("RenderWare version minor nibble."));
+			addTooltip(hWnd, tooltip, IDC_V2SPIN, _T("Adjusts the RenderWare version minor nibble."));
+			addTooltip(hWnd, tooltip, IDC_V3, _T("RenderWare version build value."));
+			addTooltip(hWnd, tooltip, IDC_V3SPIN, _T("Adjusts the RenderWare version build value."));
+			addTooltip(hWnd, tooltip, IDC_GAME, _T("Chooses a preset RenderWare file version for common GTA targets."));
+		}
 		break;
 	case WM_COMMAND:
 		switch(HIWORD(wParam)){
 		case CBN_SELCHANGE:
-			int sel = ComboBox_GetCurSel((HWND)lParam);
-			DFFExport::version = gameversions[sel].version;
-			setVersionFields(hWnd);
+			if(LOWORD(wParam) == IDC_GAME){
+				int sel = ComboBox_GetCurSel((HWND)lParam);
+				if(sel >= 0 && gameversions[sel].text){
+					DFFExport::version = gameversions[sel].version;
+					setVersionFields(hWnd);
+				}
+			}
 			break;
 		}
 		switch(LOWORD(wParam)){
@@ -837,6 +962,7 @@ ExportDlgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 			DFFExport::exportHAnim = IsDlgButtonChecked(hWnd, IDC_HANIM);
 			DFFExport::exportSkin = IsDlgButtonChecked(hWnd, IDC_SKINNING);
+			DFFExport::exportQuadData = IsDlgButtonChecked(hWnd, IDC_QUADDATA);
 
 			DFFExport::exportUserData = IsDlgButtonChecked(hWnd, IDC_USERDATA);
 			DFFExport::exportObjNames = IsDlgButtonChecked(hWnd, IDC_OBJNAMES);

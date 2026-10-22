@@ -10,8 +10,10 @@
 #include <dummy.h>
 #include <iskin.h>
 #include <modstack.h>
+#include <polyobj.h>
 #include <icustattribcontainer.h>
 #include <meshnormalspec.h>
+#include <MNNormalSpec.h>
 #include <custattrib.h>
 #if MAX_API_NUM <= 33	// 2010
 #include <maxscrpt/maxscrpt.h>
@@ -49,7 +51,7 @@
 #define STR_COPYRIGHT                 "Copyright 2016-2020 aap"
 #define STR_SCENEEXPORT               "Scene Export"
 
-#define VERSION 340
+#define VERSION 372
 
 //TCHAR *GetStringT(int id);
 
@@ -80,6 +82,11 @@ Matrix3 getLocalMatrix(INode *node);
 Matrix3 getObjectToLocalMatrix(INode *node);
 
 void transformGeometry(rw::Geometry *geo, rw::Matrix *mat);
+int scanDffImportFeatureMask(const TCHAR *filename);
+void openRwioDffBatchImportDialog(void);
+void openRwioDffBatchExportDialog(void);
+void runRwioQuadrifyAllPlusImport(void);
+int rwioProjectCachedDffAttributesForRoots(const std::vector<INode*> &roots);
 
 enum RwMat {
 	mat_color = 0, mat_coloralpha,
@@ -116,9 +123,19 @@ public:
 	static int explicitNormals;
 	static int importStdMaterials;
 	static int fixKam;
+	static int vertexChannelDisplay;
+	static int vertexChannelType;
+	static int recoverQuads;
+	static int quadrifyAllPlus;
+	static float quadrifyAllPlusDiagonalRatio;
+	static int debugImport;
+	bool dffHasQuadData;
+	bool dffHasNormalData;
+	bool dffHasVertexChannelData;
+	bool enableVertexChannelDisplayForThisImport;
 
 	Mtl *MakeGTAMaterial(rw::Material *m);
-	Mtl *MakeStdMaterial(rw::Material *m);
+	Mtl *MakeOpenPBRMaterial(rw::Material *m);
 	void makeMaterials(rw::Atomic *a, INode *inode);
 	void makeMesh(rw::Atomic *a, Mesh *maxmesh);
 	void axesHeuristics(rw::Frame *f);
@@ -177,6 +194,7 @@ public:
 	// animation
 	static int exportHAnim;
 	static int exportSkin;
+	static int exportQuadData;
 	// user data
 	static int exportUserData;
 	static int exportObjNames;

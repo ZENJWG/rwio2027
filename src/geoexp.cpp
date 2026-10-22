@@ -1,7 +1,11 @@
+#define NOMINMAX
 #include "dffimp.h"
 
 const char *getAsciiStr(const TCHAR *str);
 void setUserProps(ICustAttribContainer *cc, const TCHAR *datatype, rw::UserDataExtension *ud);
+
+static const char *RWIO_QUAD_EDGE_DATA = "rwio_quad_edge_visibility";
+static const Class_ID RGB_MULTIPLY_CLASS_ID(656, 0);
 
 // stolen from RW
 static void
@@ -23,9 +27,82 @@ GetFileName(char *outFileName, char *fullPathName)
 	}else
 	    end = start + strlen(start);
 	strLen = end - start;
+	if(strLen >= MAX_PATH)
+		strLen = MAX_PATH-1;
 	strncpy(outFileName, start, strLen + 1);
 	outFileName[strLen] = '\0';
 	if(strippedext) *end = '.';
+}
+
+static bool
+findBitmapTexmap(Texmap *tex, BitmapTex **bitmap)
+{
+	if(tex == NULL || bitmap == NULL)
+		return false;
+	if(tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)){
+		*bitmap = (BitmapTex*)tex;
+		return true;
+	}
+
+	// RWIO uses RGB_Multiply only as a viewport tint wrapper for diffuse maps.
+	// Export the original bitmap inside it so DFF texture names stay unchanged.
+	if(tex->ClassID() == RGB_MULTIPLY_CLASS_ID){
+		for(int i = 0; i < tex->NumSubTexmaps(); i++)
+			if(findBitmapTexmap(tex->GetSubTexmap(i), bitmap))
+				return true;
+	}
+	return false;
+}
+
+static bool
+bitmapHasAlpha(const MCHAR *filename)
+{
+	static std::vector<MSTR> alphaFiles;
+	static std::vector<MSTR> opaqueFiles;
+
+	MSTR file(filename);
+	for(size_t i = 0; i < alphaFiles.size(); i++)
+		if(alphaFiles[i] == file)
+			return true;
+	for(size_t i = 0; i < opaqueFiles.size(); i++)
+		if(opaqueFiles[i] == file)
+			return false;
+
+	BitmapInfo bi(filename);
+	Bitmap *bitmap = NULL;
+	bool hasAlpha = false;
+	if(TheManager && TheManager->LoadInto(&bi, &bitmap) == BMMRES_SUCCESS && bitmap){
+		int width = bitmap->Width();
+		int height = bitmap->Height();
+		if(width > 0 && height > 0){
+			std::vector<BMM_Color_64> pixels(width);
+			for(int y = 0; y < height && !hasAlpha; y++){
+				if(bitmap->GetPixels(0, y, width, pixels.data())){
+					for(int x = 0; x < width; x++){
+						if(pixels[x].a < 0xFFFF){
+							hasAlpha = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		bitmap->DeleteThis();
+	}
+	if(hasAlpha)
+		alphaFiles.push_back(file);
+	else
+		opaqueFiles.push_back(file);
+	return hasAlpha;
+}
+
+static bool
+textureUsesFileAlpha(Texmap *tex)
+{
+	BitmapTex *bmtex = NULL;
+	if(!findBitmapTexmap(tex, &bmtex))
+		return false;
+	return bmtex->GetAlphaSource() != ALPHA_NONE && bitmapHasAlpha(bmtex->GetMapName());
 }
 
 static rw::Texture*
@@ -37,33 +114,40 @@ convertTexture(Texmap *tex, Texmap *mask)
 	BitmapTex *bmtex = NULL;
 	TCHAR *name = NULL;
 	TCHAR *maskname = NULL;
-	if(tex == NULL || tex->ClassID() != Class_ID(BMTEX_CLASS_ID,0))
+	if(!findBitmapTexmap(tex, &bmtex))
 		return NULL;
-	bmtex = (BitmapTex*)tex;
 	name = (TCHAR*)bmtex->GetMapName();
-	if(mask && mask->ClassID() == Class_ID(BMTEX_CLASS_ID,0)){
-		BitmapTex *bmmask = (BitmapTex*)mask;
-		maskname = (TCHAR*)bmmask->GetMapName();
+	if(mask){
+		BitmapTex *bmmask = NULL;
+		if(findBitmapTexmap(mask, &bmmask))
+			maskname = (TCHAR*)bmmask->GetMapName();
 	}
 
 	Texture *rwt = Texture::create(NULL);
 #ifdef _UNICODE
 	char fuckmax[MAX_PATH];
 	wcstombs(fuckmax, name, MAX_PATH);
+	fuckmax[MAX_PATH-1] = '\0';
 	GetFileName(buf, fuckmax);
 #else
 	GetFileName(buf, name);
 #endif
-	strncpy(rwt->name, buf, 32);
+	strncpy(rwt->name, buf, 31);
+	rwt->name[31] = '\0';
 	if(maskname){
 #ifdef _UNICODE
 		char fuckmax[MAX_PATH];
 		wcstombs(fuckmax, maskname, MAX_PATH);
+		fuckmax[MAX_PATH-1] = '\0';
 		GetFileName(buf, fuckmax);
 #else
 		GetFileName(buf, maskname);
 #endif
-		strncpy(rwt->mask, buf, 32);
+		strncpy(rwt->mask, buf, 31);
+		rwt->mask[31] = '\0';
+	}else if(textureUsesFileAlpha(tex)){
+		strncpy(rwt->mask, rwt->name, 31);
+		rwt->mask[31] = '\0';
 	}
 
 	int filter = Texture::NEAREST;
@@ -95,6 +179,126 @@ convertTexture(Texmap *tex, Texmap *mask)
 	setUserProps(tex->GetCustAttribContainer(), _T("Texture"), UserDataExtension::get(rwt));
 
 	return rwt;
+}
+
+static float
+clamp01(float value)
+{
+	if(value < 0.0f)
+		return 0.0f;
+	if(value > 1.0f)
+		return 1.0f;
+	return value;
+}
+
+static bool
+isOpenPBRMaterial(Mtl *mtl)
+{
+	if(mtl == NULL)
+		return false;
+
+	MSTR className = mtl->ClassName();
+	return _tcsstr(className.data(), _T("OpenPBR")) != NULL;
+}
+
+static IParamBlock2*
+findParamBlockWithParam(Animatable *anim, const MCHAR *prop)
+{
+	if(anim == NULL)
+		return NULL;
+	for(int i = 0; i < anim->NumParamBlocks(); i++){
+		IParamBlock2 *pb = anim->GetParamBlock(i);
+		if(pb && pb->GetDesc() && pb->GetDesc()->NameToIndex(prop) >= 0)
+			return pb;
+	}
+	return NULL;
+}
+
+static bool
+getParamColor(Animatable *anim, const MCHAR *prop, Color &value)
+{
+	IParamBlock2 *pb = findParamBlockWithParam(anim, prop);
+	Interval valid = FOREVER;
+	return pb && pb->GetValueByName(prop, 0, value, valid);
+}
+
+static bool
+getParamFloat(Animatable *anim, const MCHAR *prop, float &value)
+{
+	IParamBlock2 *pb = findParamBlockWithParam(anim, prop);
+	Interval valid = FOREVER;
+	return pb && pb->GetValueByName(prop, 0, value, valid);
+}
+
+static bool
+getParamBool(Animatable *anim, const MCHAR *prop, bool &value)
+{
+	IParamBlock2 *pb = findParamBlockWithParam(anim, prop);
+	Interval valid = FOREVER;
+	BOOL b = FALSE;
+	if(pb && pb->GetValueByName(prop, 0, b, valid)){
+		value = b != FALSE;
+		return true;
+	}
+	return false;
+}
+
+static Texmap*
+getParamTexmap(Animatable *anim, const MCHAR *prop)
+{
+	IParamBlock2 *pb = findParamBlockWithParam(anim, prop);
+	Interval valid = FOREVER;
+	Texmap *map = NULL;
+	if(pb && pb->GetValueByName(prop, 0, map, valid))
+		return map;
+	return NULL;
+}
+
+static Texmap*
+getOpenPBREnabledMap(Mtl *mtl, const MCHAR *prop)
+{
+	Texmap *map = getParamTexmap(mtl, prop);
+	if(map == NULL)
+		return NULL;
+
+	MCHAR enableProp[128];
+	_sntprintf(enableProp, 128, _T("%s_on"), prop);
+	enableProp[127] = '\0';
+	bool enabled = true;
+	getParamBool(mtl, enableProp, enabled);
+	return enabled ? map : NULL;
+}
+
+static void
+storeQuadEdgeData(rw::Geometry *geo, Mesh *mesh)
+{
+	if(!DFFExport::exportQuadData || geo == NULL || mesh == NULL || mesh->numFaces <= 0)
+		return;
+
+	bool hasHiddenEdge = false;
+	for(int i = 0; i < mesh->numFaces && !hasHiddenEdge; i++)
+		for(int j = 0; j < 3; j++)
+			if(!mesh->faces[i].getEdgeVis(j)){
+				hasHiddenEdge = true;
+				break;
+			}
+	if(!hasHiddenEdge)
+		return;
+
+	int slot = rw::UserDataArray::geometryFindIndex(geo, RWIO_QUAD_EDGE_DATA);
+	if(slot >= 0)
+		rw::UserDataArray::geometryRemove(geo, slot);
+	slot = rw::UserDataArray::geometryAdd(geo, RWIO_QUAD_EDGE_DATA, rw::USERDATAINT, mesh->numFaces);
+	rw::UserDataArray *edgeData = rw::UserDataArray::geometryGet(geo, slot);
+	if(edgeData == NULL)
+		return;
+	for(int i = 0; i < mesh->numFaces; i++){
+		int flags = 0;
+		for(int j = 0; j < 3; j++)
+			if(mesh->faces[i].getEdgeVis(j))
+				flags |= 1 << j;
+		edgeData->setInt(i, flags);
+	}
 }
 
 static rw::Material*
@@ -136,6 +340,54 @@ convertMaterial(Mtl *mtl)
 			effects |= MatFX::BUMPMAP;
 		if(envtex)
 			effects |= MatFX::ENVMAP;
+	}else if(isOpenPBRMaterial(mtl)){
+		c = Color(1.0f, 1.0f, 1.0f);
+		getParamColor(mtl, _T("base_color"), c);
+		rwm->color.red   = clamp01(c.r)*255.0f;
+		rwm->color.green = clamp01(c.g)*255.0f;
+		rwm->color.blue  = clamp01(c.b)*255.0f;
+		rwm->color.alpha = 255.0f;
+
+		rwm->surfaceProps.ambient = 1.0f;
+		rwm->surfaceProps.diffuse = 1.0f;
+		rwm->surfaceProps.specular = 0.0f;
+		getParamFloat(mtl, _T("base_weight"), rwm->surfaceProps.diffuse);
+		getParamFloat(mtl, _T("specular_weight"), rwm->surfaceProps.specular);
+
+		difftex = getOpenPBREnabledMap(mtl, _T("base_color_map"));
+		if(difftex == NULL)
+			difftex = getParamTexmap(mtl, _T("base_color_map"));
+		masktex = getOpenPBREnabledMap(mtl, _T("geometry_opacity_map"));
+		bumptex = getOpenPBREnabledMap(mtl, _T("bump_map"));
+		envtex = getOpenPBREnabledMap(mtl, _T("coat_color_map"));
+
+		bumpCoef = 1.0f;
+		envCoef = 0.0f;
+		getParamFloat(mtl, _T("bump_map_amt"), bumpCoef);
+		getParamFloat(mtl, _T("coat_weight"), envCoef);
+		if(bumptex)
+			effects |= MatFX::BUMPMAP;
+		if(envtex)
+			effects |= MatFX::ENVMAP;
+
+		if(envtex || envCoef > 0.0001f){
+			gta::EnvMat *env = new gta::EnvMat;
+			*PLUGINOFFSET(gta::EnvMat*, rwm, gta::envMatOffset) = env;
+			env->scaleX = 8.0f;
+			env->scaleY = 8.0f;
+			env->transScaleX = 8.0f;
+			env->transScaleY = 8.0f;
+			env->shininess = clamp01(envCoef)*255.0f;
+		}
+
+		Texmap *specmap = getOpenPBREnabledMap(mtl, _T("specular_color_map"));
+		rw::Texture *spectex = convertTexture(specmap, NULL);
+		if(spectex){
+			gta::SpecMat *spec = new gta::SpecMat;
+			*PLUGINOFFSET(gta::SpecMat*, rwm, gta::specMatOffset) = spec;
+			spec->specularity = rwm->surfaceProps.specular;
+			spec->texture = spectex;
+		}
 	}else if(mtl->ClassID() == Class_ID(0x29b71842, 0x52508b70)){	// my very own RW Material
 		IParamBlock2 *pb = mtl->GetParamBlock(0);
 		float alpha;
@@ -183,11 +435,16 @@ convertMaterial(Mtl *mtl)
 		pbr->GetValue(mat_enSpec, 0, hasSpec, valid);
 		if(hasSpec){
 			Texmap *specmap;
-			gta::SpecMat *spec = new gta::SpecMat;
-			*PLUGINOFFSET(gta::SpecMat*, rwm, gta::specMatOffset) = spec;
-			pbr->GetValue(mat_specularity, 0, spec->specularity, valid);
+			float specularity;
 			pbr->GetValue(mat_specMap, 0, specmap, valid);
-			spec->texture = convertTexture(specmap, NULL);
+			rw::Texture *spectex = convertTexture(specmap, NULL);
+			if(spectex){
+				gta::SpecMat *spec = new gta::SpecMat;
+				*PLUGINOFFSET(gta::SpecMat*, rwm, gta::specMatOffset) = spec;
+				pbr->GetValue(mat_specularity, 0, specularity, valid);
+				spec->specularity = specularity;
+				spec->texture = spectex;
+			}
 		}
 	}
 	rwm->texture = convertTexture(difftex, masktex);
@@ -260,6 +517,70 @@ getNumUVSets(Mesh *mesh)
 	return n;
 }
 
+static bool
+hasSkinModifier(INode *node)
+{
+	Object *obj = node->GetObjectRef();
+	while(obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID){
+		IDerivedObject *derived = (IDerivedObject*)obj;
+		for(int i = 0; i < derived->NumModifiers(); i++)
+			if(derived->GetModifier(i)->ClassID() == SKIN_CLASSID)
+				return true;
+		obj = derived->GetObjRef();
+	}
+	return false;
+}
+
+static bool
+getTriExplicitNormal(Mesh *mesh, int face, int corner, Point3 &normal)
+{
+	if(mesh == NULL)
+		return false;
+	MeshNormalSpec *normalSpec = mesh->GetSpecifiedNormals();
+	if(normalSpec == NULL || face >= normalSpec->GetNumFaces())
+		return false;
+	MeshNormalFace &normalFace = normalSpec->Face(face);
+	if(!normalFace.GetSpecified(corner))
+		return false;
+	int normalId = normalFace.GetNormalID(corner);
+	if(normalId < 0 || normalId >= normalSpec->GetNumNormals())
+		return false;
+	normal = normalSpec->Normal(normalId);
+	return true;
+}
+
+static bool
+getPolyExplicitNormal(::Object *obj, int face, int corner, Point3 &normal)
+{
+	if(obj == NULL || obj->ClassID() != polyObjectClassID)
+		return false;
+	PolyObject *poly = (PolyObject*)obj;
+	MNMesh &mnmesh = poly->GetMesh();
+	if(face < 0 || face >= mnmesh.numf || corner < 0 || mnmesh.f[face].deg != 3)
+		return false;
+	MNNormalSpec *normalSpec = mnmesh.GetSpecifiedNormals();
+	if(normalSpec == NULL || face >= normalSpec->GetNumFaces())
+		return false;
+	normalSpec->SetParent(&mnmesh);
+	normalSpec->CheckNormals();
+	MNNormalFace &normalFace = normalSpec->Face(face);
+	if(!normalFace.GetSpecified(corner))
+		return false;
+	int normalId = normalFace.GetNormalID(corner);
+	if(normalId < 0 || normalId >= normalSpec->GetNumNormals())
+		return false;
+	normal = normalSpec->Normal(normalId);
+	return true;
+}
+
+static bool
+getSourceExplicitNormal(::Object *sourceObj, Mesh *mesh, int face, int corner, Point3 &normal)
+{
+	if(getTriExplicitNormal(mesh, face, corner, normal))
+		return true;
+	return getPolyExplicitNormal(sourceObj, face, corner, normal);
+}
+
 rw::Geometry*
 DFFExport::convertGeometry(INode *node, int **vertexmap)
 {
@@ -322,25 +643,30 @@ DFFExport::convertGeometry(INode *node, int **vertexmap)
 	geo->numVertices = 0;
 
 	int *remap = NULL;
-	if(vertexmap)
+	bool preserveSkinVertexIdentity = DFFExport::exportSkin && hasSkinModifier(node);
+	if(vertexmap){
 		*vertexmap = remap = new int[numTris*3];
+		for(int i = 0; i < numTris*3; i++)
+			remap[i] = -1;
+	}
 
 	mesh->checkNormals(TRUE);
 	gta::SaVert v;
 	for(int i = 0; i < numTris; i++){
 		for(int j = 0; j < 3; j++){
 			// vertex
-			int idx = mesh->faces[i].v[j];
-			v.p.x = mesh->verts[idx].x;
-			v.p.y = mesh->verts[idx].y;
-			v.p.z = mesh->verts[idx].z;
+			int meshVertIdx = mesh->faces[i].v[j];
+			int idx = meshVertIdx;
+			v.p.x = mesh->verts[meshVertIdx].x;
+			v.p.y = mesh->verts[meshVertIdx].y;
+			v.p.z = mesh->verts[meshVertIdx].z;
 
 			// normal
 			if(mask & 0x10){
 				// Get render normal
 				RVertex *rv = &mesh->getRVert(idx);
 				int numN = rv->rFlags & NORCT_MASK;
-				Point3 p3n;
+				Point3 p3n = mesh->getFaceNormal(i);
 				if(numN == 1)
 					p3n = rv->rn.getNormal();
 				else
@@ -350,13 +676,8 @@ DFFExport::convertGeometry(INode *node, int **vertexmap)
 							p3n = rv->ern[k].getNormal();
 							break;
 						}
-				// If there's an explicit normal, use that instead
-				MeshNormalSpec *normalSpec = mesh->GetSpecifiedNormals();
-				if(normalSpec && i < normalSpec->GetNumFaces()){
-					MeshNormalFace &f = normalSpec->Face(i);
-					if(f.GetSpecified(j))
-						p3n = normalSpec->Normal(f.GetNormalID(j));
-				}
+				// If there's an explicit normal, use that instead.
+				getSourceExplicitNormal(obj, mesh, i, j, p3n);
 				v.n.x = p3n.x;
 				v.n.y = p3n.y;
 				v.n.z = p3n.z;
@@ -410,17 +731,21 @@ DFFExport::convertGeometry(INode *node, int **vertexmap)
 				}
 			}
 			idx = gta::findSAVertex(geo, NULL, mask, &v);
+			if(idx >= 0 && preserveSkinVertexIdentity && remap && remap[idx] != meshVertIdx)
+				idx = -1;
 			if(idx < 0){
 				idx = geo->numVertices++;
 				insertSAVertex(geo, idx, mask, &v);
 			}
 			geo->triangles[i].v[j] = idx;
 			if(remap)
-				remap[idx] = mesh->faces[i].v[j];
+				remap[idx] = meshVertIdx;
 		}
 		MtlID id = mesh->getFaceMtlIndex(i);
 		geo->triangles[i].matId = id % geo->matList.numMaterials;
 	}
+
+	storeQuadEdgeData(geo, mesh);
 
 	geo->buildMeshes();
 	geo->removeUnusedMaterials();
@@ -435,8 +760,11 @@ DFFExport::convertGeometry(INode *node, int **vertexmap)
 		UserDataArray::geometryGet(geo, ud)->setString(0, shapename);
 	}
 	ICustAttribContainer *attribs = node->GetCustAttribContainer();
-	if(attribs == nil)
-		attribs = getBaseObject(node)->GetCustAttribContainer();
+	if(attribs == nil){
+		::Object *base = getBaseObject(node);
+		if(base)
+			attribs = base->GetCustAttribContainer();
+	}
 	setUserProps(attribs, _T("Object"), UserDataExtension::get(geo));
 
 	return geo;
@@ -448,6 +776,8 @@ DFFExport::convertSkin(rw::Geometry *geo, rw::Frame *frame, INode *node, Modifie
 	using namespace rw;
 
 	ISkin *skin = (ISkin*)mod->GetInterface(I_SKIN);
+	if(skin == NULL)
+		return;
 
 	int numBones = skin->GetNumBones();
 	// NB: numBones need not be equal to numNodes!
@@ -457,6 +787,8 @@ DFFExport::convertSkin(rw::Geometry *geo, rw::Frame *frame, INode *node, Modifie
 	//lprintf("BONES: %d %d\n", skin->GetNumBones(), skin->GetNumBonesFlat());
 	rwskin->init(this->numNodes, numBones, geo->numVertices);
 	ISkinContextData *skindata = skin->GetContextInterface(node);
+	if(skindata == NULL)
+		return;
 	float *weights = rwskin->weights;
 	uint8 *indices = rwskin->indices;
 	memset(weights, 0, geo->numVertices*4*sizeof(float));
@@ -469,6 +801,8 @@ DFFExport::convertSkin(rw::Geometry *geo, rw::Frame *frame, INode *node, Modifie
 	int numWeights;
 	int idx;
 	int *bonemap = new int[numBones];
+	for(int i = 0; i < numBones; i++)
+		bonemap[i] = 0;
 	for(int i = 0; i < numBones; i++){
 		INode *bone = skin->GetBone(i);
 		for(int j = 0; j < this->numNodes; j++)
@@ -483,7 +817,10 @@ DFFExport::convertSkin(rw::Geometry *geo, rw::Frame *frame, INode *node, Modifie
 		numWeights = skindata->GetNumAssignedBones(idx);
 		if(numWeights > 4) numWeights = 4;
 		for(int j = 0; j < numWeights; j++){
-			indices[i*4+j] = bonemap[skindata->GetAssignedBone(idx, j)];
+			int bone = skindata->GetAssignedBone(idx, j);
+			if(bone < 0 || bone >= numBones)
+				continue;
+			indices[i*4+j] = bonemap[bone];
 			weights[i*4+j] = skindata->GetBoneWeight(idx, j);
 		}
 	}

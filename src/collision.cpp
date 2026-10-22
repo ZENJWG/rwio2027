@@ -1,13 +1,18 @@
+#define NOMINMAX
 #include "dffimp.h"
 
 #define COLL 0x4C4C4F43
 
 #define COLATTRIB_CLASSID Class_ID(0x19cb2748, 0x358e9f50)
 
+using namespace gta;
+
 IParamBlock2*
 getColAttribs(INode *node)
 {
 	BaseObject *obj = getBaseObject(node);
+	if(obj == NULL)
+		return NULL;
 	ICustAttribContainer *cc = obj->GetCustAttribContainer();
 	if(cc){
 		int nca = cc->GetNumCustAttribs();
@@ -59,8 +64,8 @@ convertSphere(CColSphere *colsphere, INode *spherenode)
 	param->GetValue(SPHERE_RADIUS, 0, radius, valid);
 	Matrix3 trans = getLocalMatrix(spherenode);
 	Point3 pos = objectTM * trans.GetTrans();
-	colsphere->center.set(pos.x, pos.y, pos.z);
-	colsphere->radius = radius;
+	colsphere->sph.center.set(pos.x, pos.y, pos.z);
+	colsphere->sph.radius = radius;
 	colsphere->surface = getSurface(pb);
 	colsphere->piece = getPieceType(pb);
 }
@@ -87,8 +92,8 @@ convertBox(CColBox *colbox, INode *boxnode)
 	min = objectTM * min;
 	max = objectTM * max;
 
-	colbox->min.set(MIN(min.x, max.x), MIN(min.y, max.y), MIN(min.z, max.z));
-	colbox->max.set(MAX(min.x, max.x), MAX(min.y, max.y), MAX(min.z, max.z));
+	colbox->box.min.set(MIN(min.x, max.x), MIN(min.y, max.y), MIN(min.z, max.z));
+	colbox->box.max.set(MAX(min.x, max.x), MAX(min.y, max.y), MAX(min.z, max.z));
 	colbox->surface = getSurface(pb);
 	colbox->piece = getPieceType(pb);
 }
@@ -128,18 +133,18 @@ calculateBounds(CColModel *colmodel, INode *root)
 
 	// Now the collision volumes
 	for(i = 0; i < colmodel->numSpheres; i++){
-		v.x = colmodel->spheres[i].center.x + colmodel->spheres[i].radius;
-		v.y = colmodel->spheres[i].center.y + colmodel->spheres[i].radius;
-		v.z = colmodel->spheres[i].center.z + colmodel->spheres[i].radius;
+		v.x = colmodel->spheres[i].sph.center.x + colmodel->spheres[i].sph.radius;
+		v.y = colmodel->spheres[i].sph.center.y + colmodel->spheres[i].sph.radius;
+		v.z = colmodel->spheres[i].sph.center.z + colmodel->spheres[i].sph.radius;
 		box.addPoint(&v);
-		v.x = colmodel->spheres[i].center.x - colmodel->spheres[i].radius;
-		v.y = colmodel->spheres[i].center.y - colmodel->spheres[i].radius;
-		v.z = colmodel->spheres[i].center.z - colmodel->spheres[i].radius;
+		v.x = colmodel->spheres[i].sph.center.x - colmodel->spheres[i].sph.radius;
+		v.y = colmodel->spheres[i].sph.center.y - colmodel->spheres[i].sph.radius;
+		v.z = colmodel->spheres[i].sph.center.z - colmodel->spheres[i].sph.radius;
 		box.addPoint(&v);
 	}
 	for(i = 0; i < colmodel->numBoxes; i++){
-		box.addPoint(&colmodel->boxes[i].min);
-		box.addPoint(&colmodel->boxes[i].max);
+		box.addPoint(&colmodel->boxes[i].box.min);
+		box.addPoint(&colmodel->boxes[i].box.max);
 	}
 	for(i = 0; i < colmodel->numLines; i++){
 		box.addPoint(&colmodel->lines[i].p0);
@@ -188,39 +193,43 @@ convertMesh(CColModel *colmodel, int vertOffset, INode *meshnode, Mesh *mesh)
 
 // strip /_L[0-2]$/ if found (actually strip /_.?.?$/ because i'm lazy)
 char*
-modelName(char *name)
+modelName(const char* name)
 {
-	char *colname, *s;
-	int l = strlen(name);
-	colname = new char[l+1];
-	strcpy(colname, name);
-	s = strrchr(colname, '_');
-	if(s == NULL)
-		return colname;
-	l = strlen(s);
-	if(l <= 3 && l > 1)
-		*s = '\0';
+	if (name == nullptr)
+		return nullptr;
+
+	size_t len = strlen(name);
+	char* colname = new char[len + 1];
+	strcpy_s(colname, len + 1, name);  // Safe version of strcpy
+
+	char* s = strrchr(colname, '_');
+	if (s != nullptr) {
+		size_t suffixLen = strlen(s);
+		if (suffixLen <= 3 && suffixLen > 1)
+			*s = '\0';
+	}
 	return colname;
 }
 
 bool
-COLExport::writeCOL1(const TCHAR *filename)
+COLExport::writeCOL1(const TCHAR* filename)
 {
-	char *colname;
+	char* colname;
 	int numSelected = this->ifc->GetSelNodeCount();
-	INode *rootnode = NULL;
-	for(int i = 0; i < numSelected; i++){
+	INode* rootnode = NULL;
+	for (int i = 0; i < numSelected; i++) {
 		rootnode = this->ifc->GetSelNode(i);
 		break;
 	}
-	if(rootnode == NULL){
+	if (rootnode == NULL) {
 		lprintf(_T("error: nothing selected\n"));
 		return 0;
 	}
-	TCHAR *name = (TCHAR*)rootnode->GetName();
+	TCHAR* name = (TCHAR*)rootnode->GetName();
 #ifdef _UNICODE
 	char cname[MAX_PATH];
 	wcstombs(cname, name, MAX_PATH);
+	cname[MAX_PATH-1] = '\0';
 	colname = modelName(cname);
 #else
 	colname = modelName(name);
@@ -231,65 +240,67 @@ COLExport::writeCOL1(const TCHAR *filename)
 	std::vector<INode*> boxes;
 	std::vector<INode*> meshes;
 	int numChildren = rootnode->NumberOfChildren();
-	for(int i = 0; i < numChildren; i++){
-		INode *child = rootnode->GetChildNode(i);
-		IParamBlock2 *pb = getColAttribs(child);
-		BaseObject *obj = child->GetObjectRef();
+	for (int i = 0; i < numChildren; i++) {
+		INode* child = rootnode->GetChildNode(i);
+		IParamBlock2* pb = getColAttribs(child);
+		BaseObject* obj = child->GetObjectRef();
+		if(obj == NULL)
+			continue;
 		Class_ID id = obj->ClassID();
-		if(pb){
-			if(id == Class_ID(BOXOBJ_CLASS_ID, 0))
+		if (pb) {
+			if (id == Class_ID(BOXOBJ_CLASS_ID, 0))
 				boxes.push_back(child);
-			else if(id == Class_ID(SPHERE_CLASS_ID, 0))
+			else if (id == Class_ID(SPHERE_CLASS_ID, 0))
 				spheres.push_back(child);
-			else if(obj->SuperClassID() == GEOMOBJECT_CLASS_ID)
+			else if (obj->SuperClassID() == GEOMOBJECT_CLASS_ID)
 				meshes.push_back(child);
 		}
 	}
-	CColModel *colmodel = new CColModel;
-	colmodel->numSpheres = spheres.size();
-	if(colmodel->numSpheres){
+	CColModel* colmodel = new CColModel;
+	colmodel->numSpheres = static_cast<int>(spheres.size());
+	if (colmodel->numSpheres) {
 		colmodel->spheres = new CColSphere[colmodel->numSpheres];
-		for(int i = 0; i < colmodel->numSpheres; i++)
+		for (size_t i = 0; i < spheres.size(); i++)
 			convertSphere(&colmodel->spheres[i], spheres[i]);
 	}
 
-	colmodel->numBoxes = boxes.size();
-	if(colmodel->numBoxes){
+	colmodel->numBoxes = static_cast<int>(boxes.size());
+	if (colmodel->numBoxes) {
 		colmodel->boxes = new CColBox[colmodel->numBoxes];
-		for(int i = 0; i < colmodel->numBoxes; i++)
+		for (size_t i = 0; i < boxes.size(); i++)
 			convertBox(&colmodel->boxes[i], boxes[i]);
 	}
 
 	colmodel->numLines = 0;
 	colmodel->numTriangles = 0;
 	int numVertices = 0;
-	for(int i = 0; i < meshes.size(); i++){
-		Mesh *m = NULL;
-		::Object *o = meshes[i]->EvalWorldState(0).obj;
+	for (size_t i = 0; i < meshes.size(); i++) {
+		Mesh* m = NULL;
+		::Object* o = meshes[i]->EvalWorldState(0).obj;
 		assert(o->CanConvertToType(Class_ID(TRIOBJ_CLASS_ID, 0)));
-		TriObject *tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
+		TriObject* tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
 		m = &tri->GetMesh();
 		colmodel->numTriangles += m->getNumFaces();
 		numVertices += m->getNumVerts();
-		if(tri != o)
+		if (tri != o)
 			tri->DeleteMe();
 	}
-	if(numVertices && colmodel->numTriangles){
+	if (numVertices && colmodel->numTriangles) {
 		colmodel->triangles = new CColTriangle[colmodel->numTriangles];
 		colmodel->vertices = new rw::V3d[numVertices];
 	}
 	colmodel->numTriangles = 0;
 	numVertices = 0;
-	for(int i = 0; i < meshes.size(); i++){
-		Mesh *m = NULL;
-		::Object *o = meshes[i]->EvalWorldState(0).obj;
+	for (size_t i = 0; i < meshes.size(); i++) {
+		Mesh* m = NULL;
+		::Object* o = meshes[i]->EvalWorldState(0).obj;
 		assert(o->CanConvertToType(Class_ID(TRIOBJ_CLASS_ID, 0)));
-		TriObject *tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
+		TriObject* tri = (TriObject*)o->ConvertToType(0, Class_ID(TRIOBJ_CLASS_ID, 0));
 		m = &tri->GetMesh();
 		convertMesh(colmodel, numVertices, meshes[i], m);
 		colmodel->numTriangles += m->getNumFaces();
 		numVertices += m->getNumVerts();
-		if(tri != o)
+		if (tri != o)
 			tri->DeleteMe();
 	}
 	calculateBounds(colmodel, rootnode);
@@ -298,9 +309,10 @@ COLExport::writeCOL1(const TCHAR *filename)
 #ifdef _UNICODE
 	char path[MAX_PATH];
 	wcstombs(path, filename, MAX_PATH);
-	if(stream.open(path, "wb") == NULL){
+	path[MAX_PATH-1] = '\0';
+	if (stream.open(path, "wb") == NULL) {
 #else
-	if(stream.open(filename, "wb") == NULL){
+	if (stream.open(filename, "wb") == NULL) {
 #endif
 		lprintf(_T("error: couldn't open file\n"));
 		return 0;
@@ -311,20 +323,20 @@ COLExport::writeCOL1(const TCHAR *filename)
 		rw::uint32 ident;
 		rw::uint32 size;
 	} header;
-	rw::uint8 *buf;
+	rw::uint8* buf;
 	header.ident = COLL;
-	header.size = writeColModel(colmodel, &buf)+24;
+	header.size = writeColModel(colmodel, &buf) + 24;
 	stream.write8(&header, 8);
 	memset(outname, 0, 24);
-	strncpy(outname, colname, 24);
+	strncpy(outname, colname, 23);
 	delete[] colname;
 	stream.write8(outname, 24);
-	stream.write8(buf, header.size-24);
+	stream.write8(buf, header.size - 24);
 	delete[] buf;
 	stream.close();
 	delete colmodel;
 	return 1;
-}
+	}
 
 COLExport::COLExport(void)
 {

@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "dffimp.h"
 
 void
@@ -285,7 +286,7 @@ getNodeKeyFrames(INode *node, NodeFrames *nodeframes)
 	qsort(times, 1+npos+nrot, sizeof(TimeValue), sortTime);
 	// remove duplicates
 	int n = 1;
-	for(i = 1; i < npos+nrot; i++)
+	for(i = 1; i < 1+npos+nrot; i++)
 		if(times[i] > times[n-1])
 			times[n++] = times[i];
 //	lprintf(_T("num KF: %d (%f %f)\n"), n, TicksToSec(times[0]), TicksToSec(times[n-1]));
@@ -387,6 +388,9 @@ ANMExport::anmFileWrite(const TCHAR *filename)
 			n->frames[n->numFrames] = n->frames[n->numFrames-1];
 			n->frames[n->numFrames].time = duration;
 			n->numFrames++;
+		}else if(n->numFrames == 1){
+			n->frames[1] = n->frames[0];
+			n->numFrames = 2;
 		}
 		totalNumFrames += n->numFrames;
 	}

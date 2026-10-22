@@ -253,7 +253,7 @@ fn dummiesFromBiped bipnode ind = (
 	bonedummy
 )
 
-utility GtaHelper "Biped match" (
+utility RwioBipedMatchHelper "Biped match" (
 	button convMat "Match Biped to bones" width:140 align:#center
 	on convMat pressed do (
 		if $ != undefined do

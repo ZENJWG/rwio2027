@@ -45,3 +45,10 @@
 #define IDC_NAME_LGT                            40033
 #define IDC_NAME_MAT                            40034
 #define IDC_NAME_TEX                            40035
+#define IDC_VERTCHANNELDISPLAY                  40036
+#define IDC_RECOVERQUADS                        40037
+#define IDC_QUADDATA                            40038
+#define IDC_VERTCHANNELTYPE                     40039
+#define IDC_QUADRIFYALLPLUS                     40042
+#define IDC_QAP_DIAGRATIO                      40044
+#define IDC_QAP_DIAGRATIOSPIN                  40045

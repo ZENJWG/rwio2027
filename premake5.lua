@@ -1,132 +1,134 @@
-Librw = os.getenv("LIBRW")
-Librwgta = os.getenv("LIBRWGTA")
+-- RWIO for 3ds Max 2027
+--
+-- Environment overrides:
+--   LIBRW       -> librw root
+--   LIBRWGTA    -> librwgta root
+--   MAXSDK2027  -> 3ds Max 2027 SDK maxsdk folder
+--
+-- Example:
+--   set MAXSDK2027=C:\Program Files\Autodesk\3ds Max 2027 SDK\maxsdk
+--   premake5 vs2022
+--
+-- This script intentionally generates Release only; Debug is disabled for this plugin build.
+
+local Librw = os.getenv("LIBRW") or path.getabsolute("../../librw-master/librw-master")
+local Librwgta = os.getenv("LIBRWGTA") or path.getabsolute("../../librwgta-master/librwgta-master")
+local MaxSdk2027 = os.getenv("MAXSDK2027") or "C:/Program Files/Autodesk/3ds Max 2027 SDK/maxsdk"
+
+local function firstExistingDir(paths)
+	for _, p in ipairs(paths) do
+		if os.isdir(p) then
+			return p
+		end
+	end
+	return paths[1]
+end
+
+local MaxSdkLibDir = firstExistingDir({
+	path.join(MaxSdk2027, "lib/x64/Release"),
+	path.join(MaxSdk2027, "x64/lib"),
+	path.join(MaxSdk2027, "lib/x64")
+})
 
 workspace "rwio"
-	configurations { "Release", "Debug" }
-	platforms { "x86", "amd64" }
+	configurations { "Release" }
+	platforms { "amd64" }
 	location "build"
+	startproject "rwio2027"
 	system "Windows"
-	cppdialect "c++17"
+	systemversion "latest"
+	cppdialect "C++20"
 
-	filter { "platforms:x86" }
-		architecture "x86"
 	filter { "platforms:amd64" }
 		architecture "x86_64"
 	filter {}
 
-	files { "src/*.*" }
-
-	includedirs { Librw }
-	includedirs { path.join(Librwgta, "src") }
-
-	libdirs { path.join(Librw, "lib/win-%{cfg.platform}-null/%{cfg.buildcfg}") }
-	libdirs { path.join(Librwgta, "lib/win-%{cfg.platform}-null/%{cfg.buildcfg}") }
-
-	links { "rw", "rwgta" }
-	links { "core", "geom", "gfx", "mesh", "maxutil", "maxscrpt", "bmm" }
-
-function maxplugin1(maxsdk)
+project "rwio2027"
 	kind "SharedLib"
 	language "C++"
-	targetdir "lib/%{cfg.platform}/%{cfg.buildcfg}"
+	targetname "rwio2027"
 	targetextension ".dli"
-	characterset ("MBCS")
+	targetdir "lib/%{cfg.platform}/Release"
+	objdir "build/obj/%{prj.name}/%{cfg.platform}/Release"
+	characterset "Unicode"
+	exceptionhandling "SEH"
+	staticruntime "Off"
+	flags { "MultiProcessorCompile" }
 
-	includedirs { path.join(maxsdk, "include") }
+	files {
+		"src/**.h",
+		"src/**.hpp",
+		"src/**.c",
+		"src/**.cpp",
+		"src/**.rc",
+		"src/**.def"
+	}
 
-	filter { "platforms:amd64" }
-		libdirs { path.join(maxsdk, "x64/lib") }
+	includedirs {
+		Librw,
+		path.join(Librwgta, "src"),
+		path.join(MaxSdk2027, "include")
+	}
 
-		buildoptions { "\"%40" .. maxsdk .. "ProjectSettings/AdditionalCompilerOptions64.txt\"" }
-	filter { "platforms:x86" }
-		libdirs { path.join(maxsdk, "lib") }
-		buildoptions { "\"%40" .. maxsdk .. "ProjectSettings/AdditionalCompilerOptions.txt\"" }
+	libdirs {
+		path.join(Librw, "lib/win-%{cfg.platform}-null/Release"),
+		path.join(Librwgta, "lib/win-%{cfg.platform}-null/Release"),
+		MaxSdkLibDir
+	}
 
-	filter "configurations:Debug"
-		defines { "DEBUG" }
-		symbols "On"
+	links {
+		"rw",
+		"rwgta",
+		"core",
+		"geom",
+		"gfx",
+		"mesh",
+		"MNMath",
+		"poly",
+		"maxutil",
+		"maxscrpt",
+		"Paramblk2",
+		"bmm",
+		"comctl32"
+	}
+
+	buildoptions {
+		"/permissive-",
+		"/Zc:__cplusplus",
+		"/GR",
+		"/we4706",
+		"/we4390",
+		"/we4557",
+		"/we4546",
+		"/we4545",
+		"/we4295",
+		"/we4310",
+		"/we4130",
+		"/we4611",
+		"/we4213",
+		"/we4121",
+		"/we4715",
+		"/w34701",
+		"/w34265",
+		"/wd4244",
+		"/wd4018",
+		"/wd4819"
+	}
+
+	defines {
+		"WIN32",
+		"_WINDOWS",
+		"_USRDLL"
+	}
+
+	filter { "action:vs2022" }
+		toolset "v145"
+
 
 	filter "configurations:Release"
 		defines { "NDEBUG" }
-		optimize "On"
+		runtime "Release"
+		optimize "Speed"
+		symbols "Off"
+
 	filter {}
-end
-
-function maxplugin2(maxsdk)
-	kind "SharedLib"
-	language "C++"
-	targetdir "lib/%{cfg.platform}/%{cfg.buildcfg}"
-	targetextension ".dli"
-	characterset ("Unicode")
-	removeplatforms { "x86" }
-
-	includedirs { path.join(maxsdk, "include") }
-	libdirs { path.join(maxsdk, "lib/x64/Release") }
-
-	buildoptions { "/GR /we4706 /we4390 /we4557 /we4546 /we4545 /we4295 /we4310 /we4130 /we4611 /we4213 /we4121 /we4715 /w34701 /w34265 /wd4244 /wd4018 /wd4819" }
-
-	filter "configurations:Debug"
-		defines { "DEBUG" }
-		symbols "On"
-
-	filter "configurations:Release"
-		defines { "NDEBUG" }
-		optimize "On"
-	filter {}
-end
-
-project "rwio2009"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2009 SDK/maxsdk/"
-	maxplugin1(maxsdk)
-
-project "rwio2010"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2010 SDK/maxsdk/"
-	maxplugin1(maxsdk)
-
-project "rwio2012"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2012/maxsdk/"
-	maxplugin1(maxsdk)
-	filter { "platforms:amd64" }
-		debugdir "E:/Program Files/Autodesk/3ds Max 2012"
-		debugcommand "E:/Program Files/Autodesk/3ds Max 2012/3dsmax.exe"
-		postbuildcommands "copy /y \"$(TargetPath)\" \"E:\\Program Files\\Autodesk\\3ds Max 2012\\plugins\\\""
-
-project "rwio2014"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2014 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2015"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2015 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2017"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2017 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2018"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2018 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2020"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2020 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2021"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2021 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2022"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2022 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2023"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2023 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2024"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2024 SDK/maxsdk/"
-	maxplugin2(maxsdk)
-
-project "rwio2025"
-	maxsdk = "C:/Users/aap/src/maxsdk/3ds Max 2025 SDK/maxsdk/"
-	maxplugin2(maxsdk)
